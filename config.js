@@ -11,11 +11,5 @@ module.exports = {
 
   // Versi
   version: "1.0.0",
-
-  // PAKASIR Configuration
-  pakasir: {
-    apiKey: "gIzN3WC5eWOnH7mZ38G7HzUVlIYB8sxs",
-    merchantId: "4niq3e7ia",
-    baseUrl: "https://app.pakasir.com/api", // <-- perhatikan: tanpa /v1
-  },
 };
+
