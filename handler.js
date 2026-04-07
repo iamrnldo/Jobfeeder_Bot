@@ -1,16 +1,77 @@
 // ==========================================
 //  HANDLER.JS - Frontend
-//  Command, Menu, Admin System
+//  Command, Menu, Admin System, Jasa Website
 // ==========================================
 
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
+const {
+  setUserState,
+  getUserState,
+  clearUserState,
+  createOrder,
+} = require("./database");
+const pakasir = require("./pakasir");
 
 // ==========================================
 // PATH DATABASE ADMIN
 // ==========================================
 const ADMIN_DB_PATH = path.join(__dirname, "database", "admin.json");
+
+// ==========================================
+// DAFTAR PAKET JASA WEBSITE
+// ==========================================
+const websitePackages = {
+  1: {
+    id: 1,
+    name: "Landing Page Starter",
+    price: 1400000,
+    duration: "2 hari",
+    revision: "Tak terbatas",
+    description:
+      "Website 1 halaman (Single Page) statis yang responsif dan modern. Sangat pas untuk Personal Branding atau Landing Page produk.",
+    features: [
+      "1 Halaman Landing Page",
+      "Desain Responsif (Mobile & Desktop)",
+      "Integrasi Social Media",
+      "Teknologi HTML/Tailwind CSS/JS/API",
+      "Source Code",
+    ],
+  },
+  2: {
+    id: 2,
+    name: "Custom Dynamic Web",
+    price: 2500000,
+    duration: "20 hari",
+    revision: "7 kali",
+    description:
+      "Website dinamis dengan dashboard admin. Cocok untuk sistem administrasi persuratan, kasir sederhana, atau manajemen data.",
+    features: [
+      "Hingga 5 Halaman Utama",
+      "Dashboard Admin & Login User",
+      "Database MySQL & Integrasi API",
+      "Framework Laravel (PHP)",
+      "Manajemen CRUD (Input, Edit, Hapus Data)",
+    ],
+  },
+  3: {
+    id: 3,
+    name: "Full-Service Premium Web",
+    price: 3500000,
+    duration: "30 hari",
+    revision: "20 kali",
+    description:
+      "Solusi lengkap dari desain UI/UX di Figma hingga pengembangan sistem kustom yang kompleks (misal: Spasial/Peta atau E-Commerce).",
+    features: [
+      "Desain UI/UX Kustom via Figma",
+      "Fitur Kompleks (QRCode, Notifikasi, Spasial/Leaflet.js)",
+      "Keamanan & Validasi Input User",
+      "Dokumentasi Penggunaan Sistem",
+      "Maintenance & Support 1 Bulan",
+    ],
+  },
+};
 
 // ==========================================
 // ADMIN DATABASE FUNCTIONS
@@ -100,6 +161,198 @@ function isAdminOrOwner(number) {
 }
 
 // ==========================================
+// FUNGSI JASA WEBSITE
+// ==========================================
+
+/**
+ * Kirim menu pilihan paket website
+ */
+async function sendWebsiteMenu(sock, jid) {
+  let text = `╔═══════════════════════════════╗\n`;
+  text += `║  🌐 *JASA PEMBUATAN WEBSITE*  ║\n`;
+  text += `╚═══════════════════════════════╝\n\n`;
+  text += `Pilih paket yang sesuai dengan kebutuhan Anda:\n\n`;
+
+  for (const [key, pkg] of Object.entries(websitePackages)) {
+    text += `*${key}.* ${pkg.name}\n`;
+    text += `   💰 Rp${pkg.price.toLocaleString()}\n`;
+    text += `   ⏰ ${pkg.duration} • 🔄 ${pkg.revision}\n\n`;
+  }
+  text += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  text += `_Balas angka *1*, *2*, atau *3* untuk memilih paket._\n`;
+  text += `_Ketik *0* untuk batal._`;
+
+  await sock.sendMessage(jid, { text });
+}
+
+/**
+ * Kirim detail paket website
+ */
+async function sendPackageDetail(sock, jid, packageId) {
+  const pkg = websitePackages[packageId];
+  if (!pkg) return false;
+
+  let text = `📦 *${pkg.name}*\n\n`;
+  text += `${pkg.description}\n\n`;
+  text += `*Detail:*\n`;
+  text += `💰 Harga: Rp${pkg.price.toLocaleString()}\n`;
+  text += `⏰ Waktu pengerjaan: ${pkg.duration}\n`;
+  text += `🔄 Revisi: ${pkg.revision}\n\n`;
+  text += `*Yang akan Anda terima:*\n`;
+  pkg.features.forEach((f) => {
+    text += `✓ ${f}\n`;
+  });
+  text += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+  text += `_Ketik *YA* untuk memesan paket ini, atau *TIDAK* untuk batal._`;
+
+  await sock.sendMessage(jid, { text });
+  return true;
+}
+
+/**
+ * Proses alur pemesanan website (state-based)
+ */
+async function handleWebsiteOrder(sock, msg, jid, senderNumber, sender, text) {
+  const currentState = getUserState(senderNumber);
+  const lowerText = text.toLowerCase().trim();
+
+  // State 0: Belum memilih paket (select_package)
+  if (!currentState || currentState.step === "select_package") {
+    if (lowerText === "0") {
+      await sock.sendMessage(jid, { text: "❌ Pemesanan dibatalkan." });
+      clearUserState(senderNumber);
+      return;
+    }
+    const selected = parseInt(text);
+    if (selected && websitePackages[selected]) {
+      setUserState(senderNumber, {
+        step: "confirm_package",
+        packageId: selected,
+        packageName: websitePackages[selected].name,
+        price: websitePackages[selected].price,
+        duration: websitePackages[selected].duration,
+      });
+      await sendPackageDetail(sock, jid, selected);
+    } else {
+      await sock.sendMessage(jid, {
+        text: "❌ Pilihan tidak valid. Silakan pilih angka 1, 2, atau 3.",
+      });
+    }
+    return;
+  }
+
+  // State 1: Konfirmasi paket
+  if (currentState.step === "confirm_package") {
+    if (lowerText === "ya") {
+      setUserState(senderNumber, { ...currentState, step: "ask_name" });
+      await sock.sendMessage(jid, {
+        text: "📝 Silakan masukkan *nama lengkap* Anda untuk keperluan invoice:",
+      });
+    } else if (lowerText === "tidak") {
+      await sock.sendMessage(jid, {
+        text: "❌ Pemesanan dibatalkan. Ketik *menu* untuk kembali.",
+      });
+      clearUserState(senderNumber);
+    } else {
+      await sock.sendMessage(jid, {
+        text: "❌ Silakan ketik *YA* untuk melanjutkan atau *TIDAK* untuk batal.",
+      });
+    }
+    return;
+  }
+
+  // State 2: Minta nama
+  if (currentState.step === "ask_name") {
+    if (text.length < 3) {
+      await sock.sendMessage(jid, {
+        text: "❌ Nama terlalu pendek. Masukkan nama lengkap (minimal 3 huruf):",
+      });
+      return;
+    }
+    setUserState(senderNumber, {
+      ...currentState,
+      customerName: text,
+      step: "ask_email",
+    });
+    await sock.sendMessage(jid, {
+      text: "📧 Masukkan *alamat email* (opsional, kosongkan dengan ketik *-*):",
+    });
+    return;
+  }
+
+  // State 3: Minta email
+  if (currentState.step === "ask_email") {
+    let email = text === "-" ? "" : text;
+    setUserState(senderNumber, {
+      ...currentState,
+      customerEmail: email,
+      step: "processing_payment",
+    });
+
+    await sock.sendMessage(jid, {
+      text: "⏳ Sedang menyiapkan invoice pembayaran, mohon tunggu sebentar...",
+    });
+
+    try {
+      const invoice = await pakasir.createOrder({
+        amount: currentState.price,
+        customer_name: currentState.customerName,
+        customer_email: currentState.customerEmail,
+        customer_phone: senderNumber,
+        description: `Pembayaran untuk paket ${currentState.packageName}`,
+      });
+
+      const order = createOrder({
+        userJid: jid,
+        userNumber: senderNumber,
+        packageId: currentState.packageId,
+        packageName: currentState.packageName,
+        amount: currentState.price,
+        estimatedTime: currentState.duration,
+        pakasirOrderId: invoice.id,
+        checkoutUrl: invoice.checkout_url,
+        qrCodeUrl: invoice.qr_code_url,
+        status: "pending",
+      });
+
+      let paymentMessage = `💳 *INVOICE PEMBAYARAN*\n\n`;
+      paymentMessage += `Halo *${currentState.customerName}*,\n`;
+      paymentMessage += `Anda memesan paket *${currentState.packageName}*.\n`;
+      paymentMessage += `Total tagihan: *Rp${currentState.price.toLocaleString()}*\n\n`;
+      paymentMessage += `Silakan lakukan pembayaran melalui QRIS di bawah ini atau klik tautan berikut:\n`;
+      paymentMessage += `🔗 ${invoice.checkout_url}\n\n`;
+      paymentMessage += `*ID Transaksi:* ${order.id}\n`;
+      paymentMessage += `*Status:* Menunggu pembayaran\n\n`;
+      paymentMessage += `_Pembayaran akan otomatis terkonfirmasi. Setelah sukses, Anda akan menerima notifikasi._`;
+
+      if (invoice.qr_code_url) {
+        await sock.sendMessage(jid, {
+          image: { url: invoice.qr_code_url },
+          caption: paymentMessage,
+        });
+      } else {
+        await sock.sendMessage(jid, { text: paymentMessage });
+      }
+
+      clearUserState(senderNumber);
+    } catch (err) {
+      console.error("PAKASIR error:", err);
+      await sock.sendMessage(jid, {
+        text: "❌ Maaf, terjadi kesalahan saat membuat invoice. Silakan coba lagi nanti.",
+      });
+      clearUserState(senderNumber);
+    }
+    return;
+  }
+
+  // Fallback: reset state
+  clearUserState(senderNumber);
+  await sock.sendMessage(jid, {
+    text: "Sesi pemesanan kadaluarsa. Silakan ketik *website* untuk memulai lagi.",
+  });
+}
+
+// ==========================================
 // HANDLER UTAMA
 // ==========================================
 async function handleMessage(sock, msg) {
@@ -117,7 +370,7 @@ async function handleMessage(sock, msg) {
 
   // Extract teks
   let text = extractText(msg);
-  let rawText = text.trim(); // simpan teks asli (case sensitive)
+  let rawText = text.trim();
   text = text.toLowerCase().trim();
 
   // Cek mention bot
@@ -130,8 +383,16 @@ async function handleMessage(sock, msg) {
   if (!text) return;
 
   // ==========================================
-  // PARAMETERIZED COMMANDS (sebelum switch)
-  // harus dicek duluan karena ada parameter
+  // Cek apakah user sedang dalam proses pemesanan website
+  // ==========================================
+  const userState = getUserState(senderNumber);
+  if (userState && userState.step && userState.step !== "select_package") {
+    await handleWebsiteOrder(sock, msg, jid, senderNumber, sender, text);
+    return;
+  }
+
+  // ==========================================
+  // PARAMETERIZED COMMANDS (admin)
   // ==========================================
   if (text.startsWith("/addadmin ") || text.startsWith("addadmin ")) {
     await handleAddAdmin(sock, msg, jid, senderNumber, rawText);
@@ -143,7 +404,6 @@ async function handleMessage(sock, msg) {
     return;
   }
 
-  // Handle response dari interactive delete list (deladmin_628xxxx)
   if (text.startsWith("deladmin_")) {
     await handleDelAdminFromList(sock, jid, senderNumber, text);
     return;
@@ -160,6 +420,14 @@ async function handleMessage(sock, msg) {
       case "help":
       case "/help":
         await sendMainMenu(sock, jid, sender, senderNumber);
+        break;
+
+      // ============ JASA WEBSITE ============
+      case "website":
+      case "/website":
+      case "jasa website":
+        await sendWebsiteMenu(sock, jid);
+        setUserState(senderNumber, { step: "select_package" });
         break;
 
       // ============ DEMO FITUR ============
@@ -228,9 +496,7 @@ async function handleMessage(sock, msg) {
         });
         break;
 
-      // ==========================================
-      // ADMIN PANEL - RESPONSE DARI INTERACTIVE LIST
-      // ==========================================
+      // ============ ADMIN PANEL ============
       case "admin_add":
         if (!isAdminOrOwner(senderNumber)) {
           await sock.sendMessage(jid, {
@@ -343,7 +609,8 @@ async function handleMessage(sock, msg) {
               `• Interactive List Button\n` +
               `• Button Message\n` +
               `• List Message\n` +
-              `• Template Button`,
+              `• Template Button\n` +
+              `• Jasa Pembuatan Website (ketik *website*)`,
           });
         }
         break;
@@ -357,7 +624,6 @@ async function handleMessage(sock, msg) {
 // ADMIN: HANDLE ADD ADMIN
 // ==========================================
 async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
-  // Cek permission
   if (!isAdminOrOwner(senderNumber)) {
     await sock.sendMessage(jid, {
       text: "⛔ *AKSES DITOLAK*\n\nHanya Admin & Owner yang bisa menambah admin.",
@@ -366,22 +632,18 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
   }
 
   let targetNumber = "";
-
-  // Cara 1: Dari mention (tag @user)
   const mentionedJids =
     msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
 
   if (mentionedJids.length > 0) {
     targetNumber = getNumberFromJid(mentionedJids[0]);
   } else {
-    // Cara 2: Dari teks (ambil angka setelah command)
     const parts = rawText.split(/\s+/);
     if (parts.length >= 2) {
       targetNumber = normalizeNumber(parts[1]);
     }
   }
 
-  // Validasi
   if (!targetNumber || targetNumber.length < 10) {
     await sock.sendMessage(jid, {
       text:
@@ -394,7 +656,6 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
     return;
   }
 
-  // Cek apakah sudah jadi owner
   if (isOwner(targetNumber)) {
     await sock.sendMessage(jid, {
       text: "👑 Nomor tersebut adalah *Owner*, tidak perlu dijadikan admin.",
@@ -402,7 +663,6 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
     return;
   }
 
-  // Cek apakah sudah jadi admin
   if (isAdmin(targetNumber)) {
     await sock.sendMessage(jid, {
       text: `⚠️ Nomor *${targetNumber}* sudah menjadi admin.`,
@@ -410,7 +670,6 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
     return;
   }
 
-  // Tambahkan admin
   const admins = loadAdmins();
   admins.push(targetNumber);
   saveAdmins(admins);
@@ -430,7 +689,6 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
 // ADMIN: HANDLE DELETE ADMIN (dari command)
 // ==========================================
 async function handleDelAdmin(sock, jid, senderNumber, rawText) {
-  // Cek permission
   if (!isAdminOrOwner(senderNumber)) {
     await sock.sendMessage(jid, {
       text: "⛔ *AKSES DITOLAK*\n\nHanya Admin & Owner yang bisa menghapus admin.",
@@ -438,7 +696,6 @@ async function handleDelAdmin(sock, jid, senderNumber, rawText) {
     return;
   }
 
-  // Ambil nomor dari teks
   const parts = rawText.split(/\s+/);
   let targetNumber = "";
 
@@ -465,15 +722,11 @@ async function handleDelAdmin(sock, jid, senderNumber, rawText) {
 // ADMIN: HANDLE DELETE DARI INTERACTIVE LIST
 // ==========================================
 async function handleDelAdminFromList(sock, jid, senderNumber, text) {
-  // Cek permission
   if (!isAdminOrOwner(senderNumber)) {
-    await sock.sendMessage(jid, {
-      text: "⛔ *AKSES DITOLAK*",
-    });
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
     return;
   }
 
-  // Format: "deladmin_628xxxx"
   const targetNumber = text.replace("deladmin_", "");
   await executeDeleteAdmin(sock, jid, senderNumber, targetNumber);
 }
@@ -482,18 +735,15 @@ async function handleDelAdminFromList(sock, jid, senderNumber, text) {
 // ADMIN: EXECUTE DELETE (shared logic)
 // ==========================================
 async function executeDeleteAdmin(sock, jid, senderNumber, targetNumber) {
-    // Cek apakah target adalah admin
-    
-     if (isOwner(targetNumber)) {
-       await sock.sendMessage(jid, {
-         text:
-           "⛔ *TIDAK BISA MENGHAPUS OWNER*\n\n" +
-           `👑 Nomor *${targetNumber}* adalah Owner bot.\n` +
-           "Owner tidak bisa dihapus oleh siapapun.",
-       });
-       return;
-     }
-
+  if (isOwner(targetNumber)) {
+    await sock.sendMessage(jid, {
+      text:
+        "⛔ *TIDAK BISA MENGHAPUS OWNER*\n\n" +
+        `👑 Nomor *${targetNumber}* adalah Owner bot.\n` +
+        "Owner tidak bisa dihapus oleh siapapun.",
+    });
+    return;
+  }
 
   if (!isAdmin(targetNumber)) {
     await sock.sendMessage(jid, {
@@ -502,13 +752,13 @@ async function executeDeleteAdmin(sock, jid, senderNumber, targetNumber) {
     return;
   }
 
-//   Cegah admin menghapus diri sendiri (opsional)
   if (normalizeNumber(senderNumber) === normalizeNumber(targetNumber)) {
-    await sock.sendMessage(jid, { text: "❌ Tidak bisa menghapus diri sendiri." });
+    await sock.sendMessage(jid, {
+      text: "❌ Tidak bisa menghapus diri sendiri.",
+    });
     return;
   }
 
-  // Hapus admin
   let admins = loadAdmins();
   admins = admins.filter(
     (a) => normalizeNumber(a) !== normalizeNumber(targetNumber),
@@ -537,11 +787,9 @@ async function sendAdminList(sock, jid) {
     `║  🔐 *DAFTAR ADMIN*   ║\n` +
     `╚══════════════════════╝\n\n`;
 
-  // Owner
   text += `👑 *OWNER:*\n`;
   text += `└ 📱 ${config.ownerNumber}\n\n`;
 
-  // Admin list
   text += `🛡️ *ADMIN (${admins.length}):*\n`;
 
   if (admins.length === 0) {
@@ -562,25 +810,21 @@ async function sendAdminList(sock, jid) {
 // ADMIN: KIRIM INTERACTIVE LIST UNTUK DELETE
 // ==========================================
 async function sendAdminDeleteList(sock, jid, senderNumber) {
-    const admins = loadAdmins();
-    
+  const admins = loadAdmins();
+  const deletableAdmins = admins.filter((admin) => !isOwner(admin));
 
-    const deletableAdmins = admins.filter((admin) => !isOwner(admin));
-
-  // Kalau tidak ada admin
-  if (admins.length === 0) {
+  if (deletableAdmins.length === 0) {
     await sock.sendMessage(jid, {
       text:
         "📋 *DELETE ADMIN*\n\n" +
-        "_Belum ada admin yang terdaftar._\n\n" +
+        "_Tidak ada admin yang bisa dihapus (selain Owner)._\n\n" +
         "Tambah admin dulu dengan:\n" +
         "```/addadmin 628xxxxxxxxxx```",
     });
     return;
   }
 
-  // Buat rows dari daftar admin
-  const rows = admins.map((admin, index) => ({
+  const rows = deletableAdmins.map((admin, index) => ({
     header: `Admin #${index + 1}`,
     title: admin,
     description: `Hapus ${admin} dari daftar admin`,
@@ -591,7 +835,7 @@ async function sendAdminDeleteList(sock, jid, senderNumber) {
     text:
       `🗑️ *DELETE ADMIN*\n\n` +
       `Pilih admin yang ingin dihapus dari daftar.\n` +
-      `Total admin: *${deletableAdmins.length}*\n\n` +
+      `Total admin yang bisa dihapus: *${deletableAdmins.length}*\n\n` +
       `👑 _Owner (${config.ownerNumber}) tidak bisa dihapus._`,
     title: "Hapus Admin",
     subtitle: "Pilih admin untuk dihapus",
@@ -630,7 +874,6 @@ function extractText(msg) {
   if (m.templateButtonReplyMessage?.selectedId)
     return m.templateButtonReplyMessage.selectedId;
 
-  // Interactive button response
   if (m.interactiveResponseMessage) {
     try {
       const body =
@@ -670,7 +913,6 @@ function checkBotMentioned(msg, botNumber) {
 // ⭐ MENU UTAMA - INTERACTIVE LIST
 // ==========================================
 async function sendMainMenu(sock, jid, sender, senderNumber) {
-  // Section dasar (semua user)
   const sections = [
     {
       title: "📨 Fitur Message",
@@ -699,6 +941,17 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
           title: "Image + Button",
           description: "Kirim gambar dengan tombol",
           id: "menu_image",
+        },
+      ],
+    },
+    {
+      title: "🌐 Layanan",
+      rows: [
+        {
+          header: "💻 Website",
+          title: "Jasa Pembuatan Website",
+          description: "Lihat paket dan harga website",
+          id: "website",
         },
       ],
     },
@@ -732,9 +985,6 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     },
   ];
 
-  // ==========================================
-  // ADMIN SECTION (hanya muncul untuk admin/owner)
-  // ==========================================
   if (isAdminOrOwner(senderNumber)) {
     const admins = loadAdmins();
     const roleLabel = isOwner(senderNumber) ? "👑 Owner" : "🛡️ Admin";
@@ -765,7 +1015,6 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     });
   }
 
-  // Bangun teks menu
   const roleText = isOwner(senderNumber)
     ? "👑 Role: *Owner*"
     : isAdmin(senderNumber)
