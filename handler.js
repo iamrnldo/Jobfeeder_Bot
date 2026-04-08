@@ -380,33 +380,41 @@ async function handleMessage(sock, msg) {
 
 // ==========================================
 // 💼 MENU JASA WEBSITE
+// ✅ Menggunakan Button Message (bukan list)
 // ==========================================
 async function sendServiceMenu(sock, jid, sender) {
-  const rows = config.services.map((s) => ({
-    header: `${s.emoji} ${s.priceFormatted}`,
-    title: s.name,
-    description: s.description,
-    id: `service_${s.id}`,
-  }));
+  const hasTestingService = config.services.some((s) => s.id === "testing");
 
-  const testingRows = rows.filter((r) => r.id === "service_testing");
-  const productionRows = rows.filter((r) => r.id !== "service_testing");
+  // Bangun buttons
+  const buttons = [];
 
-  const sections = [];
-
-  if (testingRows.length > 0) {
-    sections.push({
-      title: "🧪 Testing (Developer Only)",
-      highlight_label: "⚠️ DEV",
-      rows: testingRows,
+  // Tombol testing (jika ada)
+  if (hasTestingService) {
+    buttons.push({
+      buttonId: "service_testing",
+      buttonText: { displayText: "🧪 Testing — Rp 5" },
+      type: 1,
     });
   }
 
-  sections.push({
-    title: "💼 Paket Jasa Website",
-    highlight_label: "QRIS Payment",
-    rows: productionRows,
-  });
+  // 3 tombol paket utama
+  buttons.push(
+    {
+      buttonId: "service_landing",
+      buttonText: { displayText: "🌐 Landing Page — Rp 1.400.000" },
+      type: 1,
+    },
+    {
+      buttonId: "service_custom",
+      buttonText: { displayText: "⚙️ Custom Web — Rp 2.500.000" },
+      type: 1,
+    },
+    {
+      buttonId: "service_premium",
+      buttonText: { displayText: "🚀 Premium Web — Rp 3.500.000" },
+      type: 1,
+    }
+  );
 
   await sock.sendMessage(jid, {
     text:
@@ -414,24 +422,20 @@ async function sendServiceMenu(sock, jid, sender) {
       `║  💼 *JASA PEMBUATAN WEB*  ║\n` +
       `╚══════════════════════════╝\n\n` +
       `Halo *${sender}*! 👋\n\n` +
-      (testingRows.length > 0 ? `🧪 *Testing Payment* — Rp 5 ⚠️\n` : ``) +
-      `🌐 *Landing Page Starter* — Rp 1.400.000\n` +
-      `⚙️ *Custom Dynamic Web* — Rp 2.500.000\n` +
-      `🚀 *Full-Service Premium* — Rp 3.500.000\n\n` +
+      `Kami menyediakan jasa pembuatan website\n` +
+      `profesional dengan 3 pilihan paket:\n\n` +
+      `🌐 *Landing Page Starter*\n` +
+      `└ Rp 1.400.000\n\n` +
+      `⚙️ *Custom Dynamic Web*\n` +
+      `└ Rp 2.500.000\n\n` +
+      `🚀 *Full-Service Premium Web*\n` +
+      `└ Rp 3.500.000\n\n` +
       `💳 Pembayaran via *QRIS*\n` +
-      `🔒 Pemesanan dilakukan di *private chat*\n\n` +
+      `🔒 Pemesanan di *private chat*\n\n` +
       `Pilih paket di bawah 👇`,
-    title: "Jasa Pembuatan Website",
     footer: `© 2024 ${config.botName} | Pakasir QRIS`,
-    interactiveButtons: [
-      {
-        name: "single_select",
-        buttonParamsJson: JSON.stringify({
-          title: "📋 Pilih Paket Website",
-          sections,
-        }),
-      },
-    ],
+    buttons,
+    headerType: 1,
   });
 }
 
@@ -1379,50 +1383,23 @@ function checkBotMentioned(msg, botNumber) {
 
 // ==========================================
 // ⭐ MENU UTAMA — INTERACTIVE LIST
+// ✅ Section jasa diganti 1 tombol ke sendServiceMenu
 // ==========================================
 async function sendMainMenu(sock, jid, sender, senderNumber) {
   const hasTestingService = config.services.some((s) => s.id === "testing");
 
   const sections = [];
 
-  // Testing section (jika ada)
-  if (hasTestingService) {
-    sections.push({
-      title: "🧪 Testing Payment",
-      highlight_label: "⚠️ DEV",
-      rows: [
-        {
-          header: "🧪 Rp 5",
-          title: "⚠️ Testing Payment",
-          description: "Test pembayaran QRIS — Rp 5 saja",
-          id: "service_testing",
-        },
-      ],
-    });
-  }
-
   sections.push(
     {
-      title: "💼 Jasa Pembuatan Website",
+      title: "🛒 Pemesanan",
       highlight_label: "🔥 Baru",
       rows: [
         {
-          header: "🌐 Rp 1.400.000",
-          title: "Landing Page Starter",
-          description: "Landing page responsif profesional",
-          id: "service_landing",
-        },
-        {
-          header: "⚙️ Rp 2.500.000",
-          title: "Custom Dynamic Web",
-          description: "Website dinamis multi-halaman + CMS",
-          id: "service_custom",
-        },
-        {
-          header: "🚀 Rp 3.500.000",
-          title: "Full-Service Premium Web",
-          description: "Website full-fitur + maintenance",
-          id: "service_premium",
+          header: "💼 Website",
+          title: "Jasa Pemesanan Website",
+          description: "Lihat & pilih paket jasa pembuatan website",
+          id: "menu_jasa",
         },
       ],
     },
@@ -1495,7 +1472,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
           id: "menu_ping",
         },
       ],
-    },
+    }
   );
 
   // Admin section
@@ -1544,14 +1521,11 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     text:
       `╔══════════════════════════╗\n` +
       `║  🤖 *MENU BOT WA*        ║\n` +
-      `╚══════════════════════════╝\n\n` +
+      `╚══════��═══════════════════╝\n\n` +
       `Halo *${sender}*! 👋\n` +
       `Role: *${roleText}*\n\n` +
-      `💼 *Jasa Pembuatan Website*\n` +
-      (hasTestingService ? `├ 🧪 Testing — Rp 5 ⚠️\n` : ``) +
-      `├ 🌐 Landing Page — Rp 1.400.000\n` +
-      `├ ⚙️ Custom Web — Rp 2.500.000\n` +
-      `└ 🚀 Premium Web — Rp 3.500.000\n\n` +
+      `🛒 *Jasa Pemesanan Website*\n` +
+      `└ Pilih dari menu untuk lihat paket\n\n` +
       `💳 Pembayaran via *QRIS*\n` +
       `🔒 Pemesanan di *private chat*\n\n` +
       `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
