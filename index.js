@@ -17,11 +17,11 @@ const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 const http = require("http");
 
+const { handleMessage } = require("./handler");
 const {
-  handleMessage,
   notifyPaymentSuccess,
   notifyPaymentFailed,
-} = require("./handler");
+} = require("./handler_pemesanan");
 const config = require("./config");
 const pakasir = require("./pakasir");
 
