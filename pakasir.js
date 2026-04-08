@@ -71,6 +71,8 @@ function createOrder(data) {
     completedAt: null,
     notifiedBuyer: false,
     notifiedSeller: false,
+    // ✅ BARU: Simpan key pesan QRIS untuk di-delete nanti
+    qrisMessageKey: null,
   };
   orders.push(order);
   saveOrders(orders);

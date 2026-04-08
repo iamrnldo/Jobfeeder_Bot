@@ -10,6 +10,14 @@ const config = require("./config");
 const pakasir = require("./pakasir");
 
 // ==========================================
+// HELPER: Delay / sleep
+// ==========================================
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+
+// ==========================================
 // PATH DATABASE ADMIN
 // ==========================================
 const ADMIN_DB_PATH = path.join(__dirname, "database", "admin.json");
@@ -503,12 +511,15 @@ async function handleConfirmPayment(
     // ==========================================
     // ✅ GENERATE QR IMAGE dari payment_number (QR string)
     // ==========================================
+    // ==========================================
+    // ✅ GENERATE QR IMAGE dari payment_number (QR string)
+    // ==========================================
     if (payment.payment_number && payment.payment_method === "qris") {
       const qrBuffer = await pakasir.generateQRImage(payment.payment_number);
 
       if (qrBuffer) {
-        // Kirim QR sebagai gambar
-        await sock.sendMessage(jid, {
+        // ✅ Kirim QR sebagai gambar & simpan messageKey
+        const sentMsg = await sock.sendMessage(jid, {
           image: qrBuffer,
           caption:
             `╔══════════════════════════╗\n` +
@@ -530,6 +541,16 @@ async function handleConfirmPayment(
             `⏰ *Berlaku sampai:*\n${pakasir.formatDate(payment.expired_at)}\n\n` +
             `📋 Ketik */cek* setelah bayar untuk verifikasi`,
         });
+
+        // ✅ Simpan messageKey ke database order
+        if (sentMsg?.key) {
+          pakasir.updateOrder(order.orderId, {
+            qrisMessageKey: sentMsg.key,
+          });
+          console.log(
+            `💾 QRIS message key saved: ${JSON.stringify(sentMsg.key)}`,
+          );
+        }
       } else {
         // Fallback: gagal generate QR → kirim link
         const payUrl = pakasir.getPaymentUrl(
@@ -537,7 +558,7 @@ async function handleConfirmPayment(
           service.price,
           true,
         );
-        await sock.sendMessage(jid, {
+        const sentMsg = await sock.sendMessage(jid, {
           text:
             `💳 *PEMBAYARAN QRIS*\n\n` +
             `📦 Order: *${order.orderId}*\n` +
@@ -547,10 +568,17 @@ async function handleConfirmPayment(
             `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
             `📋 Ketik */cek* setelah bayar`,
         });
+
+        // ✅ Simpan juga message key fallback
+        if (sentMsg?.key) {
+          pakasir.updateOrder(order.orderId, {
+            qrisMessageKey: sentMsg.key,
+          });
+        }
       }
     } else {
-      // Non-QRIS (VA dll) → kirim nomor VA
-      await sock.sendMessage(jid, {
+      // Non-QRIS (VA dll)
+      const sentMsg = await sock.sendMessage(jid, {
         text:
           `╔══════════════════════════╗\n` +
           `║  💳 *PEMBAYARAN*          ║\n` +
@@ -563,6 +591,13 @@ async function handleConfirmPayment(
           `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
           `📋 Ketik */cek* setelah bayar`,
       });
+
+      // ✅ Simpan message key
+      if (sentMsg?.key) {
+        pakasir.updateOrder(order.orderId, {
+          qrisMessageKey: sentMsg.key,
+        });
+      }
     }
 
     // Notif owner
@@ -856,10 +891,36 @@ async function notifyOwnerNewOrder(
 // ✅ NOTIF PEMBAYARAN BERHASIL
 // Dikirim ke BUYER dan OWNER
 // ==========================================
+// ==========================================
+// ✅ NOTIF PEMBAYARAN BERHASIL
+// 1. Delete pesan QRIS
+// 2. Kirim notif sukses ke buyer
+// 3. Kirim notif sukses ke owner
+// ==========================================
 async function notifyPaymentSuccess(sock, order) {
   if (!order) return;
 
-  // ===== NOTIF KE BUYER =====
+  // ==========================================
+  // ✅ STEP 1: DELETE PESAN QRIS
+  // ==========================================
+  if (order.qrisMessageKey) {
+    try {
+      await sock.sendMessage(order.buyerJid, {
+        delete: order.qrisMessageKey,
+      });
+      console.log(`🗑️ QRIS message deleted: ${order.orderId}`);
+    } catch (err) {
+      console.error(`❌ Gagal delete QRIS message:`, err.message);
+      // Lanjut meski gagal delete
+    }
+
+    // Tunggu sebentar setelah delete
+    await delay(1000);
+  }
+
+  // ==========================================
+  // ✅ STEP 2: KIRIM NOTIF SUKSES KE BUYER
+  // ==========================================
   try {
     await sock.sendMessage(order.buyerJid, {
       text:
@@ -873,15 +934,20 @@ async function notifyPaymentSuccess(sock, order) {
         `✅ *Status:* Lunas\n` +
         `📅 *Dibayar:* ${pakasir.formatDate(order.completedAt)}\n\n` +
         `📌 *Langkah selanjutnya:*\n` +
-        `Tim kami akan segera menghubungi Anda untuk memulai pengerjaan.\n\n` +
-        `Terima kasih! 🙏`,
+        `Tim kami akan segera menghubungi Anda\n` +
+        `untuk memulai pengerjaan project.\n\n` +
+        `Terima kasih telah mempercayakan\n` +
+        `project Anda kepada kami! 🙏`,
     });
     pakasir.updateOrder(order.orderId, { notifiedBuyer: true });
+    console.log(`✅ Buyer notified: ${order.buyerNumber}`);
   } catch (err) {
     console.error("❌ Gagal notif buyer:", err.message);
   }
 
-  // ===== NOTIF KE OWNER =====
+  // ==========================================
+  // ✅ STEP 3: KIRIM NOTIF KE OWNER
+  // ==========================================
   try {
     await sock.sendMessage(numberToJid(config.ownerNumber), {
       text:
@@ -899,11 +965,12 @@ async function notifyPaymentSuccess(sock, order) {
         `💡 Segera hubungi client untuk mulai pengerjaan.`,
     });
     pakasir.updateOrder(order.orderId, { notifiedSeller: true });
+    console.log(`✅ Owner notified: ${config.ownerNumber}`);
   } catch (err) {
     console.error("❌ Gagal notif owner:", err.message);
   }
 
-  console.log(`✅ Payment SUCCESS: ${order.orderId} | ${order.buyerNumber}`);
+  console.log(`✅ Payment SUCCESS flow done: ${order.orderId}`);
 }
 
 // ==========================================
