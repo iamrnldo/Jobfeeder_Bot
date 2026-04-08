@@ -11,39 +11,12 @@ const http = require("http");
 const QRCode = require("qrcode");
 const config = require("./config");
 
-// ==========================================
-// PATH DATABASE
-// ==========================================
-const ORDERS_DB_PATH = path.join(__dirname, "database", "orders.json");
+// ✅ Ganti dari local JSON ke database_api.js
+const db = require("./database_api");
 
 // ==========================================
-// ORDER DATABASE FUNCTIONS
+// ORDER FUNCTIONS — delegate ke database_api
 // ==========================================
-
-function ensureDir() {
-  const dir = path.dirname(ORDERS_DB_PATH);
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-}
-
-function loadOrders() {
-  try {
-    ensureDir();
-    if (!fs.existsSync(ORDERS_DB_PATH)) {
-      fs.writeFileSync(ORDERS_DB_PATH, "[]");
-      return [];
-    }
-    return JSON.parse(fs.readFileSync(ORDERS_DB_PATH, "utf-8"));
-  } catch {
-    return [];
-  }
-}
-
-function saveOrders(orders) {
-  ensureDir();
-  fs.writeFileSync(ORDERS_DB_PATH, JSON.stringify(orders, null, 2));
-}
 
 function generateOrderId() {
   const timestamp = Date.now().toString(36).toUpperCase();
@@ -51,8 +24,7 @@ function generateOrderId() {
   return `ORD-${timestamp}-${random}`;
 }
 
-function createOrder(data) {
-  const orders = loadOrders();
+async function createOrder(data) {
   const order = {
     orderId: generateOrderId(),
     serviceId: data.serviceId,
@@ -64,32 +36,61 @@ function createOrder(data) {
     buyerNumber: data.buyerNumber,
     buyerName: data.buyerName,
     paymentMethod: config.pakasir.paymentMethod,
-    paymentNumber: null, // QR string atau VA number
-    expiredAt: null, // dari Pakasir
-    status: "pending", // pending | completed | expired | failed | cancelled
+    paymentNumber: null,
+    expiredAt: null,
+    status: "pending",
     createdAt: new Date().toISOString(),
     completedAt: null,
     notifiedBuyer: false,
     notifiedSeller: false,
-    // ✅ BARU: Simpan key pesan QRIS untuk di-delete nanti
     qrisMessageKey: null,
+    mockApiId: null,
   };
-  orders.push(order);
-  saveOrders(orders);
-  console.log(
-    `📦 Order created: ${order.orderId} | ${order.serviceName} | ${order.amount}`,
-  );
+
+  // ✅ Simpan ke local + upload ke MockAPI (background)
+  await db.createOrder(order);
+
+  console.log(`📦 Order created: ${order.orderId} | ${order.serviceName}`);
   return order;
 }
 
-function updateOrder(orderId, updates) {
-  const orders = loadOrders();
-  const index = orders.findIndex((o) => o.orderId === orderId);
-  if (index === -1) return null;
-  orders[index] = { ...orders[index], ...updates };
-  saveOrders(orders);
-  return orders[index];
+async function updateOrder(orderId, updates) {
+  // ✅ Update local + MockAPI (background)
+  return await db.updateOrder(orderId, updates);
 }
+
+function loadOrders() {
+  return db.loadOrders();
+}
+
+function findOrderById(orderId) {
+  return db.findOrderById(orderId);
+}
+
+function findOrderByOrderId(orderId) {
+  return db.findOrderByOrderId(orderId);
+}
+
+function findOrderByTransactionId(transactionId) {
+  return db.findOrderByTransactionId(transactionId);
+}
+
+function findOrderByReference(reference) {
+  return db.findOrderByReference(reference);
+}
+
+function getPendingOrderByBuyer(buyerNumber) {
+  return db.getPendingOrderByBuyer(buyerNumber);
+}
+
+function getExpiredOrders() {
+  return db.getExpiredOrders();
+}
+
+function getAllOrders(limit = 20) {
+  return db.getAllOrders(limit);
+}
+
 
 function findOrderById(orderId) {
   return loadOrders().find((o) => o.orderId === orderId) || null;
@@ -117,6 +118,7 @@ function getAllOrders(limit = 20) {
   return loadOrders().slice(-limit).reverse();
 }
 
+
 // ==========================================
 // HTTP REQUEST HELPER
 // ==========================================
@@ -132,23 +134,17 @@ function httpRequest(url, options, postData) {
       ...options,
     };
 
-    console.log(`🌐 ${requestOptions.method || "GET"} → ${url}`);
-
     const req = lib.request(requestOptions, (res) => {
       let data = "";
-
-      // Handle redirect
       if (
         [301, 302, 307, 308].includes(res.statusCode) &&
         res.headers.location
       ) {
-        console.log(`↪️  Redirect → ${res.headers.location}`);
         httpRequest(res.headers.location, options, postData)
           .then(resolve)
           .catch(reject);
         return;
       }
-
       res.on("data", (chunk) => (data += chunk));
       res.on("end", () => {
         try {
@@ -173,52 +169,20 @@ function httpRequest(url, options, postData) {
 // ==========================================
 // ✅ API: Transaction Create
 // POST https://app.pakasir.com/api/transactioncreate/{method}
-//
-// Body:
-// {
-//   "project": "jasapembuatanweb",
-//   "order_id": "ORD-XXXXX",
-//   "amount": 1400000,
-//   "api_key": "xxx"
-// }
-//
-// Response:
-// {
-//   "payment": {
-//     "project": "jasapembuatanweb",
-//     "order_id": "ORD-XXXXX",
-//     "amount": 1400000,
-//     "fee": 1003,
-//     "total_payment": 1401003,
-//     "payment_method": "qris",
-//     "payment_number": "00020101021226...",  ← QR string
-//     "expired_at": "2025-09-19T01:18:49Z"
-//   }
-// }
 // ==========================================
 async function createTransaction(orderId, amount, method) {
   const { baseUrl, project, apiKey } = config.pakasir;
-
-  // Tentukan payment method
   const paymentMethod = method || config.pakasir.paymentMethod || "qris";
-
   const url = `${baseUrl}/api/transactioncreate/${paymentMethod}`;
 
   const body = JSON.stringify({
-    project: project,
+    project,
     order_id: orderId,
-    amount: amount,
+    amount,
     api_key: apiKey,
   });
 
-  console.log(`\n💳 ═══════════════════════════════════════`);
-  console.log(`💳 Pakasir Transaction Create`);
-  console.log(`💳 URL: ${url}`);
-  console.log(`💳 Project: ${project}`);
-  console.log(`💳 Order ID: ${orderId}`);
-  console.log(`💳 Amount: ${amount}`);
-  console.log(`💳 Method: ${paymentMethod}`);
-  console.log(`💳 ═══════════════════════════════════════\n`);
+  console.log(`\n💳 Pakasir createTransaction: ${orderId} | ${amount} | ${paymentMethod}`);
 
   try {
     const response = await httpRequest(
@@ -230,62 +194,33 @@ async function createTransaction(orderId, amount, method) {
           Accept: "application/json",
         },
       },
-      body,
+      body
     );
 
-    console.log(
-      `📥 Response (${response.status}):`,
-      JSON.stringify(response.data, null, 2),
-    );
+    console.log(`📥 Pakasir response (${response.status}):`, JSON.stringify(response.data, null, 2));
 
     if (
       response.status >= 200 &&
       response.status < 300 &&
       response.data?.payment
     ) {
-      return {
-        success: true,
-        payment: response.data.payment,
-      };
+      return { success: true, payment: response.data.payment };
     } else {
-      // Error response
       const errMsg =
         typeof response.data === "object"
-          ? response.data.message ||
-            response.data.error ||
-            JSON.stringify(response.data)
+          ? response.data.message || response.data.error || JSON.stringify(response.data)
           : String(response.data);
-      return {
-        success: false,
-        error: `HTTP ${response.status}: ${errMsg}`,
-        raw: response.data,
-      };
+      return { success: false, error: `HTTP ${response.status}: ${errMsg}` };
     }
   } catch (err) {
     console.error(`❌ Pakasir API error:`, err.message);
-    return {
-      success: false,
-      error: err.message,
-    };
+    return { success: false, error: err.message };
   }
 }
 
 // ==========================================
 // ✅ API: Transaction Detail
-// GET https://app.pakasir.com/api/transactiondetail
-//     ?project={slug}&amount={amount}&order_id={order_id}&api_key={api_key}
-//
-// Response:
-// {
-//   "transaction": {
-//     "amount": 22000,
-//     "order_id": "ORD-XXXXX",
-//     "project": "jasapembuatanweb",
-//     "status": "completed",
-//     "payment_method": "qris",
-//     "completed_at": "2024-09-10T08:07:02.819+07:00"
-//   }
-// }
+// GET https://app.pakasir.com/api/transactiondetail?...
 // ==========================================
 async function getTransactionDetail(orderId, amount) {
   const { baseUrl, project, apiKey } = config.pakasir;
@@ -296,8 +231,6 @@ async function getTransactionDetail(orderId, amount) {
     `&amount=${amount}` +
     `&order_id=${encodeURIComponent(orderId)}` +
     `&api_key=${encodeURIComponent(apiKey)}`;
-
-  console.log(`🔍 Transaction Detail: ${orderId} (${amount})`);
 
   try {
     const response = await httpRequest(url, {
@@ -310,19 +243,15 @@ async function getTransactionDetail(orderId, amount) {
       response.status < 300 &&
       response.data?.transaction
     ) {
-      return {
-        success: true,
-        transaction: response.data.transaction,
-      };
-    } else {
-      return {
-        success: false,
-        error:
-          typeof response.data === "object"
-            ? response.data.message || JSON.stringify(response.data)
-            : String(response.data),
-      };
+      return { success: true, transaction: response.data.transaction };
     }
+    return {
+      success: false,
+      error:
+        typeof response.data === "object"
+          ? response.data.message || JSON.stringify(response.data)
+          : String(response.data),
+    };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -330,45 +259,18 @@ async function getTransactionDetail(orderId, amount) {
 
 // ==========================================
 // ✅ API: Payment Simulation (Sandbox)
-// POST https://app.pakasir.com/api/paymentsimulation
-//
-// Body:
-// {
-//   "project": "jasapembuatanweb",
-//   "order_id": "ORD-XXXXX",
-//   "amount": 1400000,
-//   "api_key": "xxx"
-// }
 // ==========================================
 async function simulatePayment(orderId, amount) {
   const { baseUrl, project, apiKey } = config.pakasir;
 
-  const url = `${baseUrl}/api/paymentsimulation`;
-
-  const body = JSON.stringify({
-    project: project,
-    order_id: orderId,
-    amount: amount,
-    api_key: apiKey,
-  });
-
-  console.log(`🧪 Simulating payment: ${orderId} (${amount})`);
+  const body = JSON.stringify({ project, order_id: orderId, amount, api_key: apiKey });
 
   try {
     const response = await httpRequest(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-      },
-      body,
+      `${baseUrl}/api/paymentsimulation`,
+      { method: "POST", headers: { "Content-Type": "application/json" } },
+      body
     );
-
-    console.log(`🧪 Simulation response:`, response.data);
-
     return {
       success: response.status >= 200 && response.status < 300,
       data: response.data,
@@ -380,35 +282,18 @@ async function simulatePayment(orderId, amount) {
 
 // ==========================================
 // ✅ API: Transaction Cancel
-// POST https://app.pakasir.com/api/transactioncancel
 // ==========================================
 async function cancelTransaction(orderId, amount) {
   const { baseUrl, project, apiKey } = config.pakasir;
 
-  const url = `${baseUrl}/api/transactioncancel`;
-
-  const body = JSON.stringify({
-    project: project,
-    order_id: orderId,
-    amount: amount,
-    api_key: apiKey,
-  });
-
-  console.log(`🚫 Cancelling transaction: ${orderId}`);
+  const body = JSON.stringify({ project, order_id: orderId, amount, api_key: apiKey });
 
   try {
     const response = await httpRequest(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-      },
-      body,
+      `${baseUrl}/api/transactioncancel`,
+      { method: "POST", headers: { "Content-Type": "application/json" } },
+      body
     );
-
     return {
       success: response.status >= 200 && response.status < 300,
       data: response.data,
@@ -419,9 +304,7 @@ async function cancelTransaction(orderId, amount) {
 }
 
 // ==========================================
-// ✅ GENERATE QR IMAGE dari QR String
-// Pakasir mengembalikan QR string, bukan gambar
-// Kita convert string → gambar PNG buffer
+// ✅ Generate QR Image dari QR String
 // ==========================================
 async function generateQRImage(qrString) {
   try {
@@ -429,13 +312,9 @@ async function generateQRImage(qrString) {
       type: "png",
       width: 512,
       margin: 2,
-      color: {
-        dark: "#000000",
-        light: "#FFFFFF",
-      },
+      color: { dark: "#000000", light: "#FFFFFF" },
       errorCorrectionLevel: "M",
     });
-    console.log(`✅ QR Image generated (${buffer.length} bytes)`);
     return buffer;
   } catch (err) {
     console.error(`❌ QR generation error:`, err.message);
@@ -444,8 +323,7 @@ async function generateQRImage(qrString) {
 }
 
 // ==========================================
-// ✅ GENERATE PAYMENT URL (Integrasi Via URL)
-// https://app.pakasir.com/pay/{slug}/{amount}?order_id={order_id}&qris_only=1
+// ✅ Generate Payment URL
 // ==========================================
 function getPaymentUrl(orderId, amount, qrisOnly = true) {
   const { baseUrl, project } = config.pakasir;
@@ -511,20 +389,22 @@ module.exports = {
   generateQRImage,
   getPaymentUrl,
 
-  // Order DB
+  // Order DB (via database_api)
   createOrder,
   updateOrder,
+  loadOrders,
   findOrderById,
   findOrderByOrderId,
+  findOrderByTransactionId,
+  findOrderByReference,
   getPendingOrderByBuyer,
   getExpiredOrders,
   getAllOrders,
-  loadOrders,
+  generateOrderId,
 
-  // Helpers
+  // Format helpers
   formatRupiah,
   formatDate,
   statusEmoji,
   statusLabel,
-  generateOrderId,
 };
