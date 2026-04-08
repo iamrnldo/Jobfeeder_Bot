@@ -35,8 +35,14 @@ module.exports = {
 
   // ============ JASA WEBSITE ============
   services: [
+  
+
+    // ==========================================
+    // 💼 JASA PEMBUATAN WEBSITE
+    // ==========================================
     {
       id: "landing",
+      category: "website",
       name: "Landing Page Starter",
       price: 1400000,
       priceFormatted: "Rp 1.400.000",
@@ -52,9 +58,11 @@ module.exports = {
         "✅ Revisi 2x",
         "✅ Pengerjaan 3-5 hari kerja",
       ],
+      addons: [],
     },
     {
       id: "custom",
+      category: "website",
       name: "Custom Dynamic Web",
       price: 2500000,
       priceFormatted: "Rp 2.500.000",
@@ -72,9 +80,11 @@ module.exports = {
         "✅ Revisi 5x",
         "✅ Pengerjaan 7-14 hari kerja",
       ],
+      addons: [],
     },
     {
       id: "premium",
+      category: "website",
       name: "Full-Service Premium Web",
       price: 3500000,
       priceFormatted: "Rp 3.500.000",
@@ -94,6 +104,104 @@ module.exports = {
         "✅ Maintenance 3 bulan gratis",
         "✅ Revisi unlimited",
         "✅ Pengerjaan 14-30 hari kerja",
+      ],
+      addons: [],
+    },
+
+    // ==========================================
+    // 🤖 JASA PEMBUATAN BOT WHATSAPP
+    // ==========================================
+    {
+      id: "bot_button",
+      category: "botwa",
+      name: "Bot WA Custom Button",
+      price: 500000,
+      priceFormatted: "Rp 500.000",
+      emoji: "🤖",
+      description: "Bot WhatsApp dengan interactive button (atex-ovi baileys)",
+      features: [
+        "✅ Bot WA interactive button",
+        "✅ Library: atex-ovi baileys",
+        "✅ Button Message, List, Template",
+        "✅ Admin panel (add/del admin)",
+        "✅ Custom command sesuai kebutuhan",
+        "✅ Source code diberikan",
+        "✅ Free panel hosting 1 bulan",
+        "✅ Bulan berikutnya Rp 25.000/bulan",
+        "✅ Support setup & deploy",
+        "✅ Pengerjaan 3-5 hari kerja",
+      ],
+      addons: [
+        { id: "addon_qris", name: "Fitur Pembayaran QRIS", price: 100000 },
+        { id: "addon_imggen", name: "Fitur Generate Image", price: 50000 },
+      ],
+      panelInfo: {
+        freeMonth: 1,
+        monthlyFee: 25000,
+        monthlyFeeFormatted: "Rp 25.000/bulan",
+      },
+    },
+    {
+      id: "bot_text",
+      category: "botwa",
+      name: "Bot WA Text Command",
+      price: 250000,
+      priceFormatted: "Rp 250.000",
+      emoji: "💬",
+      description: "Bot WhatsApp dengan perintah teks sederhana",
+      features: [
+        "✅ Bot WA text command",
+        "✅ Command custom sesuai kebutuhan",
+        "✅ Auto-reply pesan",
+        "✅ Admin panel dasar",
+        "✅ Source code diberikan",
+        "✅ Free panel hosting 1 bulan",
+        "✅ Bulan berikutnya Rp 25.000/bulan",
+        "✅ Support setup & deploy",
+        "✅ Pengerjaan 1-3 hari kerja",
+      ],
+      addons: [
+        { id: "addon_qris", name: "Fitur Pembayaran QRIS", price: 100000 },
+        { id: "addon_imggen", name: "Fitur Generate Image", price: 50000 },
+      ],
+      panelInfo: {
+        freeMonth: 1,
+        monthlyFee: 25000,
+        monthlyFeeFormatted: "Rp 25.000/bulan",
+      },
+    },
+  ],
+
+  // ==========================================
+  // ADD-ON FITUR BOT WA (referensi)
+  // ==========================================
+  addons: [
+    {
+      id: "addon_qris",
+      name: "Fitur Pembayaran / Transaksi QRIS",
+      price: 100000,
+      priceFormatted: "Rp 100.000",
+      emoji: "💳",
+      description: "Integrasi pembayaran QRIS ke dalam bot WA",
+      features: [
+        "✅ Pembayaran via QRIS",
+        "✅ Webhook otomatis",
+        "✅ Notif buyer & seller",
+        "✅ Manajemen order",
+        "✅ Cek status pembayaran",
+      ],
+    },
+    {
+      id: "addon_imggen",
+      name: "Fitur Generate Image",
+      price: 50000,
+      priceFormatted: "Rp 50.000",
+      emoji: "🎨",
+      description: "Generate gambar otomatis melalui bot WA",
+      features: [
+        "✅ Generate image dari teks",
+        "✅ Template image custom",
+        "✅ Kirim hasil via WA",
       ],
     },
   ],

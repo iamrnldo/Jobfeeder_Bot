@@ -1,6 +1,7 @@
 // ==========================================
 //  HANDLER_PEMESANAN.JS
 //  Pemesanan & Pembayaran (Pakasir QRIS)
+//  ✅ Support multi kategori: website & botwa
 // ==========================================
 
 const config = require("./config");
@@ -29,16 +30,68 @@ function getServiceById(id) {
   return config.services.find((s) => s.id === id) || null;
 }
 
+function getServicesByCategory(category) {
+  return config.services.filter((s) => s.category === category);
+}
+
+function getAddonById(id) {
+  return config.addons.find((a) => a.id === id) || null;
+}
+
+function formatRupiahShort(amount) {
+  if (amount >= 1000000) {
+    return `Rp ${amount / 1000000}jt`;
+  } else if (amount >= 1000) {
+    return `Rp ${amount / 1000}rb`;
+  }
+  return `Rp ${amount}`;
+}
+
+// ==========================================
+// 🏠 MENU PILIH KATEGORI JASA
+// ✅ Tampil dulu kategori: Website atau Bot WA
+// ==========================================
+async function sendKategoriMenu(sock, jid, sender) {
+  await sock.sendMessage(jid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  🛒 *PILIH KATEGORI JASA* ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `Halo *${sender}*! 👋\n\n` +
+      `Silakan pilih kategori jasa yang kamu butuhkan:\n\n` +
+      `💼 *Jasa Pembuatan Website*\n` +
+      `└ Landing Page, Custom Web, Premium\n\n` +
+      `🤖 *Jasa Pembuatan Bot WhatsApp*\n` +
+      `└ Bot Button, Bot Text Command\n\n` +
+      `💳 Pembayaran via *QRIS*\n` +
+      `🔒 Pemesanan di *private chat*\n\n` +
+      `Pilih kategori di bawah 👇`,
+    footer: `© 2024 ${config.botName} | Pakasir QRIS`,
+    buttons: [
+      {
+        buttonId: "kategori_website",
+        buttonText: { displayText: "💼 Jasa Pembuatan Website" },
+        type: 1,
+      },
+      {
+        buttonId: "kategori_botwa",
+        buttonText: { displayText: "🤖 Jasa Pembuatan Bot WA" },
+        type: 1,
+      },
+    ],
+    headerType: 1,
+  });
+}
+
 // ==========================================
 // 💼 MENU JASA WEBSITE
-// ✅ Button Message (bukan list)
+// ✅ Button Message
 // ==========================================
 async function sendServiceMenu(sock, jid, sender) {
   const hasTestingService = config.services.some((s) => s.id === "testing");
 
   const buttons = [];
 
-  // Tombol testing (jika ada)
   if (hasTestingService) {
     buttons.push({
       buttonId: "service_testing",
@@ -47,7 +100,6 @@ async function sendServiceMenu(sock, jid, sender) {
     });
   }
 
-  // 3 tombol paket utama
   buttons.push(
     {
       buttonId: "service_landing",
@@ -71,15 +123,11 @@ async function sendServiceMenu(sock, jid, sender) {
       `╔══════════════════════════╗\n` +
       `║  💼 *JASA PEMBUATAN WEB*  ║\n` +
       `╚══════════════════════════╝\n\n` +
-      `Halo *${sender}*! 👋\n\n` +
       `Kami menyediakan jasa pembuatan website\n` +
       `profesional dengan 3 pilihan paket:\n\n` +
-      `🌐 *Landing Page Starter*\n` +
-      `└ Rp 1.400.000\n\n` +
-      `⚙️ *Custom Dynamic Web*\n` +
-      `└ Rp 2.500.000\n\n` +
-      `🚀 *Full-Service Premium Web*\n` +
-      `└ Rp 3.500.000\n\n` +
+      `🌐 *Landing Page Starter* — Rp 1.400.000\n` +
+      `⚙️ *Custom Dynamic Web* — Rp 2.500.000\n` +
+      `🚀 *Full-Service Premium* — Rp 3.500.000\n\n` +
       `💳 Pembayaran via *QRIS*\n` +
       `🔒 Pemesanan di *private chat*\n\n` +
       `Pilih paket di bawah 👇`,
@@ -90,7 +138,53 @@ async function sendServiceMenu(sock, jid, sender) {
 }
 
 // ==========================================
-// 💼 DETAIL SERVICE
+// 🤖 MENU JASA BOT WHATSAPP
+// ✅ Button Message
+// ==========================================
+async function sendBotWaMenu(sock, jid, sender) {
+  await sock.sendMessage(jid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  🤖 *JASA BOT WHATSAPP*   ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `Halo *${sender}*! 👋\n\n` +
+      `Kami menyediakan jasa pembuatan Bot WA\n` +
+      `profesional dengan 2 pilihan paket:\n\n` +
+      `🤖 *Bot WA Custom Button*\n` +
+      `├ Harga: *Rp 500.000*\n` +
+      `├ Interactive button (atex-ovi baileys)\n` +
+      `├ ✅ Free panel 1 bulan\n` +
+      `└ Perpanjang Rp 25.000/bulan\n\n` +
+      `💬 *Bot WA Text Command*\n` +
+      `├ Harga: *Rp 250.000*\n` +
+      `├ Perintah teks sederhana\n` +
+      `├ ✅ Free panel 1 bulan\n` +
+      `└ Perpanjang Rp 25.000/bulan\n\n` +
+      `➕ *Tambahan Fitur:*\n` +
+      `├ 💳 Fitur QRIS — Rp 100.000\n` +
+      `└ 🎨 Generate Image — Rp 50.000\n\n` +
+      `💳 Pembayaran via *QRIS*\n` +
+      `🔒 Pemesanan di *private chat*\n\n` +
+      `Pilih paket di bawah 👇`,
+    footer: `© 2024 ${config.botName} | Pakasir QRIS`,
+    buttons: [
+      {
+        buttonId: "service_bot_button",
+        buttonText: { displayText: "🤖 Bot Button — Rp 500.000" },
+        type: 1,
+      },
+      {
+        buttonId: "service_bot_text",
+        buttonText: { displayText: "💬 Bot Text — Rp 250.000" },
+        type: 1,
+      },
+    ],
+    headerType: 1,
+  });
+}
+
+// ==========================================
+// 💼 DETAIL SERVICE (website)
 // ✅ Jika dari group → redirect ke private
 // ==========================================
 async function sendServiceDetail(sock, jid, sender, senderNumber, serviceId) {
@@ -100,7 +194,6 @@ async function sendServiceDetail(sock, jid, sender, senderNumber, serviceId) {
     return;
   }
 
-  // ✅ Jika dari GROUP → redirect ke private
   if (isGroupChat(jid)) {
     const privateJid = numberToJid(senderNumber);
 
@@ -122,12 +215,11 @@ async function sendServiceDetail(sock, jid, sender, senderNumber, serviceId) {
     return;
   }
 
-  // Dari private → langsung tampilkan
   await sendServiceDetailPrivate(sock, jid, sender, senderNumber, serviceId);
 }
 
 // ==========================================
-// 💼 DETAIL SERVICE — PRIVATE CHAT (inti)
+// 💼 DETAIL SERVICE — PRIVATE (website)
 // ==========================================
 async function sendServiceDetailPrivate(
   sock,
@@ -139,7 +231,6 @@ async function sendServiceDetailPrivate(
   const service = getServiceById(serviceId);
   if (!service) return;
 
-  // Cek pending order
   const existingOrder = pakasir.getPendingOrderByBuyer(senderNumber);
   if (existingOrder) {
     await sock.sendMessage(jid, {
@@ -198,10 +289,45 @@ async function sendServiceDetailPrivate(
 }
 
 // ==========================================
-// 💳 KONFIRMASI PEMBAYARAN
-// ✅ Selalu redirect ke private chat
+// 🤖 DETAIL BOT WA — PRIVATE
+// ✅ Menampilkan opsi addon (QRIS, Image Gen)
 // ==========================================
-async function handleConfirmPayment(
+async function sendBotWaDetail(sock, jid, sender, senderNumber, serviceId) {
+  const service = getServiceById(serviceId);
+  if (!service) {
+    await sock.sendMessage(jid, { text: "❌ Layanan tidak ditemukan." });
+    return;
+  }
+
+  // Redirect dari group ke private
+  if (isGroupChat(jid)) {
+    const privateJid = numberToJid(senderNumber);
+
+    await sock.sendMessage(jid, {
+      text:
+        `👋 Halo *${sender}*!\n\n` +
+        `🔒 Untuk keamanan & privasi, proses pemesanan\n` +
+        `dilanjutkan di *private chat*.\n\n` +
+        `📩 Silakan cek chat pribadi kamu! 👇`,
+    });
+
+    await sendBotWaDetailPrivate(
+      sock,
+      privateJid,
+      sender,
+      senderNumber,
+      serviceId,
+    );
+    return;
+  }
+
+  await sendBotWaDetailPrivate(sock, jid, sender, senderNumber, serviceId);
+}
+
+// ==========================================
+// 🤖 DETAIL BOT WA — PRIVATE (inti)
+// ==========================================
+async function sendBotWaDetailPrivate(
   sock,
   jid,
   sender,
@@ -209,12 +335,151 @@ async function handleConfirmPayment(
   serviceId,
 ) {
   const service = getServiceById(serviceId);
+  if (!service) return;
+
+  const existingOrder = pakasir.getPendingOrderByBuyer(senderNumber);
+  if (existingOrder) {
+    await sock.sendMessage(jid, {
+      text:
+        `⚠️ *PESANAN PENDING*\n\n` +
+        `Kamu masih punya pesanan belum dibayar:\n\n` +
+        `📦 Order: *${existingOrder.orderId}*\n` +
+        `💼 Jasa: *${existingOrder.serviceName}*\n` +
+        `💰 Total: *${pakasir.formatRupiah(existingOrder.totalPayment)}*\n\n` +
+        `Ketik */cek* untuk cek status.`,
+    });
+    return;
+  }
+
+  const featureList = service.features.join("\n");
+
+  // Daftar addon
+  let addonText = "";
+  if (service.addons && service.addons.length > 0) {
+    addonText =
+      `\n➕ *Tambahan Fitur (Opsional):*\n` +
+      service.addons
+        .map((a) => {
+          const addon = getAddonById(a.id);
+          return addon
+            ? `${addon.emoji} ${addon.name} — ${addon.priceFormatted}`
+            : "";
+        })
+        .filter(Boolean)
+        .join("\n") +
+      "\n";
+  }
+
+  // Panel info
+  let panelText = "";
+  if (service.panelInfo) {
+    panelText =
+      `\n🖥️ *Info Panel Hosting:*\n` +
+      `├ Free: ${service.panelInfo.freeMonth} bulan pertama\n` +
+      `└ Perpanjang: ${service.panelInfo.monthlyFeeFormatted}\n`;
+  }
+
+  await sock.sendMessage(jid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  ${service.emoji} *DETAIL PAKET*         ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `📦 *${service.name}*\n` +
+      `💰 *Harga: ${service.priceFormatted}*\n\n` +
+      `📝 *Deskripsi:*\n${service.description}\n\n` +
+      `🎯 *Fitur:*\n${featureList}\n` +
+      addonText +
+      panelText +
+      `\n💳 *Pembayaran:* QRIS\n` +
+      `⏰ *Masa berlaku:* ${config.pakasir.expiredMinutes} menit\n\n` +
+      `Pilih paket di bawah 👇`,
+    title: service.name,
+    footer: `© 2024 ${config.botName}`,
+    interactiveButtons: [
+      {
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+          title: "📋 Pilih Paket",
+          sections: [
+            {
+              title: `${service.emoji} Paket Dasar`,
+              rows: [
+                {
+                  header: service.priceFormatted,
+                  title: `${service.emoji} ${service.name} (Tanpa Addon)`,
+                  description: `Hanya bot dasar — ${service.priceFormatted}`,
+                  id: `confirm_${serviceId}_base`,
+                },
+              ],
+            },
+            {
+              title: "➕ Paket + Addon",
+              rows: [
+                {
+                  header: `${service.priceFormatted} + Rp 100.000`,
+                  title: "💳 + Fitur Pembayaran QRIS",
+                  description: `${service.name} + QRIS — ${pakasir.formatRupiah(service.price + 100000)}`,
+                  id: `confirm_${serviceId}_qris`,
+                },
+                {
+                  header: `${service.priceFormatted} + Rp 50.000`,
+                  title: "🎨 + Fitur Generate Image",
+                  description: `${service.name} + Image Gen — ${pakasir.formatRupiah(service.price + 50000)}`,
+                  id: `confirm_${serviceId}_imggen`,
+                },
+                {
+                  header: `${service.priceFormatted} + Rp 150.000`,
+                  title: "💳🎨 + QRIS & Generate Image",
+                  description: `${service.name} + Semua Addon — ${pakasir.formatRupiah(service.price + 150000)}`,
+                  id: `confirm_${serviceId}_all`,
+                },
+              ],
+            },
+            {
+              title: "❌ Batalkan",
+              rows: [
+                {
+                  header: "Kembali",
+                  title: "❌ Batal / Lihat Paket Lain",
+                  description: "Kembali ke menu jasa Bot WA",
+                  id: "menu_botwa",
+                },
+              ],
+            },
+          ],
+        }),
+      },
+    ],
+  });
+}
+
+// ==========================================
+// 💳 KONFIRMASI PEMBAYARAN
+// ✅ Support serviceId dengan suffix addon
+//    Format: confirm_{serviceId}_{addonType}
+//    Contoh: confirm_bot_button_base
+//            confirm_bot_button_qris
+//            confirm_bot_button_all
+// ==========================================
+async function handleConfirmPayment(
+  sock,
+  jid,
+  sender,
+  senderNumber,
+  fullServiceId,
+) {
+  // Parse serviceId dan addonType
+  // fullServiceId contoh: "bot_button_qris" atau "landing"
+  const { serviceId, addonType, finalPrice, addonLabel } =
+    parseServiceId(fullServiceId);
+
+  const service = getServiceById(serviceId);
   if (!service) {
     await sock.sendMessage(jid, { text: "❌ Layanan tidak ditemukan." });
     return;
   }
 
-  // ✅ Jika dari GROUP → redirect ke private
+  // Redirect dari group ke private
   if (isGroupChat(jid)) {
     const privateJid = numberToJid(senderNumber);
 
@@ -224,20 +489,101 @@ async function handleConfirmPayment(
         `Cek chat pribadi kamu! 👇`,
     });
 
-    await processPayment(sock, privateJid, sender, senderNumber, serviceId);
+    await processPayment(
+      sock,
+      privateJid,
+      sender,
+      senderNumber,
+      serviceId,
+      addonType,
+      finalPrice,
+      addonLabel,
+    );
     return;
   }
 
-  // Dari private → langsung proses
-  await processPayment(sock, jid, sender, senderNumber, serviceId);
+  await processPayment(
+    sock,
+    jid,
+    sender,
+    senderNumber,
+    serviceId,
+    addonType,
+    finalPrice,
+    addonLabel,
+  );
+}
+
+// ==========================================
+// HELPER: Parse service ID + addon type
+// ==========================================
+function parseServiceId(fullServiceId) {
+  // Cek apakah ada suffix addon
+  const addonSuffixes = ["_base", "_qris", "_imggen", "_all"];
+
+  let serviceId = fullServiceId;
+  let addonType = "base";
+
+  for (const suffix of addonSuffixes) {
+    if (fullServiceId.endsWith(suffix)) {
+      serviceId = fullServiceId.slice(0, -suffix.length);
+      addonType = suffix.replace("_", "");
+      break;
+    }
+  }
+
+  const service = getServiceById(serviceId);
+  if (!service) {
+    return { serviceId, addonType, finalPrice: 0, addonLabel: "" };
+  }
+
+  let addonPrice = 0;
+  let addonLabel = "";
+
+  switch (addonType) {
+    case "qris":
+      addonPrice = 100000;
+      addonLabel = " + Fitur QRIS";
+      break;
+    case "imggen":
+      addonPrice = 50000;
+      addonLabel = " + Generate Image";
+      break;
+    case "all":
+      addonPrice = 150000;
+      addonLabel = " + QRIS & Generate Image";
+      break;
+    default:
+      addonPrice = 0;
+      addonLabel = "";
+  }
+
+  return {
+    serviceId,
+    addonType,
+    finalPrice: service.price + addonPrice,
+    addonLabel,
+  };
 }
 
 // ==========================================
 // 💳 PROSES PEMBAYARAN — SELALU PRIVATE
 // ==========================================
-async function processPayment(sock, jid, sender, senderNumber, serviceId) {
+async function processPayment(
+  sock,
+  jid,
+  sender,
+  senderNumber,
+  serviceId,
+  addonType = "base",
+  finalPrice = null,
+  addonLabel = "",
+) {
   const service = getServiceById(serviceId);
   if (!service) return;
+
+  const price = finalPrice || service.price;
+  const serviceName = service.name + addonLabel;
 
   // Cek pending order
   const existingOrder = pakasir.getPendingOrderByBuyer(senderNumber);
@@ -256,35 +602,27 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
   await sock.sendMessage(jid, {
     text:
       `⏳ *Membuat pembayaran QRIS...*\n\n` +
-      `💼 ${service.name}\n` +
-      `💰 ${service.priceFormatted}\n\n` +
+      `💼 ${serviceName}\n` +
+      `💰 ${pakasir.formatRupiah(price)}\n\n` +
       `Mohon tunggu...`,
   });
 
-  // Buat order di DB
-  // ✅ buyerJid = private JID bukan group JID
+  // Buat order
   const order = pakasir.createOrder({
     serviceId: service.id,
-    serviceName: service.name,
-    amount: service.price,
+    serviceName: serviceName,
+    amount: price,
     buyerJid: jid,
     buyerNumber: senderNumber,
     buyerName: sender,
   });
 
-  // ==========================================
   // Panggil Pakasir API
-  // POST /api/transactioncreate/qris
-  // ==========================================
-  const result = await pakasir.createTransaction(
-    order.orderId,
-    service.price,
-    "qris",
-  );
+  const result = await pakasir.createTransaction(order.orderId, price, "qris");
 
   if (result.success && result.payment) {
     const payment = result.payment;
-    const totalPayment = payment.total_payment || service.price;
+    const totalPayment = payment.total_payment || price;
     const fee = payment.fee || 0;
 
     pakasir.updateOrder(order.orderId, {
@@ -295,14 +633,11 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
       expiredAt: payment.expired_at || order.expiredAt,
     });
 
-    // ==========================================
-    // QRIS → Generate gambar dari QR string
-    // ==========================================
+    // Generate QR
     if (payment.payment_number && payment.payment_method === "qris") {
       const qrBuffer = await pakasir.generateQRImage(payment.payment_number);
 
       if (qrBuffer) {
-        // ✅ Kirim QR Image + Tombol Batalkan Pesanan
         const sentMsg = await sock.sendMessage(jid, {
           image: qrBuffer,
           caption:
@@ -310,8 +645,11 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
             `║  💳 *PEMBAYARAN QRIS*     ║\n` +
             `╚══════════════════════════╝\n\n` +
             `📦 *Order ID:* ${order.orderId}\n` +
-            `💼 *Jasa:* ${service.name}\n` +
+            `💼 *Jasa:* ${serviceName}\n` +
             `💰 *Harga:* ${service.priceFormatted}\n` +
+            (addonLabel
+              ? `➕ *Addon:* ${addonLabel.replace(" + ", "")}\n`
+              : ``) +
             (fee > 0
               ? `💸 *Biaya admin:* ${pakasir.formatRupiah(fee)}\n`
               : ``) +
@@ -326,7 +664,6 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
             `${pakasir.formatDate(payment.expired_at)}\n\n` +
             `📋 Ketik */cek* setelah bayar\n` +
             `🚫 Tekan tombol di bawah untuk batalkan`,
-          // ✅ Tombol batalkan langsung di pesan QRIS
           interactiveButtons: [
             {
               name: "quick_reply",
@@ -342,22 +679,16 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
           pakasir.updateOrder(order.orderId, {
             qrisMessageKey: sentMsg.key,
           });
-          console.log(
-            `💾 QRIS message key saved: ${JSON.stringify(sentMsg.key)}`,
-          );
+          console.log(`💾 QRIS key saved: ${order.orderId}`);
         }
       } else {
-        // Fallback: gagal generate gambar → kirim link + tombol batalkan
-        const payUrl = pakasir.getPaymentUrl(
-          order.orderId,
-          service.price,
-          true,
-        );
+        // Fallback link
+        const payUrl = pakasir.getPaymentUrl(order.orderId, price, true);
         const sentMsg = await sock.sendMessage(jid, {
           text:
             `💳 *PEMBAYARAN QRIS*\n\n` +
             `📦 Order: *${order.orderId}*\n` +
-            `💼 Jasa: *${service.name}*\n` +
+            `💼 Jasa: *${serviceName}*\n` +
             `💵 Total: *${pakasir.formatRupiah(totalPayment)}*\n\n` +
             `🔗 *Link Pembayaran:*\n${payUrl}\n\n` +
             `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
@@ -375,20 +706,16 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
         });
 
         if (sentMsg?.key) {
-          pakasir.updateOrder(order.orderId, {
-            qrisMessageKey: sentMsg.key,
-          });
+          pakasir.updateOrder(order.orderId, { qrisMessageKey: sentMsg.key });
         }
       }
     } else {
-      // Non-QRIS (Virtual Account dll) + tombol batalkan
+      // Non-QRIS (VA)
       const sentMsg = await sock.sendMessage(jid, {
         text:
-          `╔══════════════════════════╗\n` +
-          `║  💳 *PEMBAYARAN*          ║\n` +
-          `╚══════════════════════════╝\n\n` +
+          `💳 *PEMBAYARAN*\n\n` +
           `📦 Order: *${order.orderId}*\n` +
-          `💼 Jasa: *${service.name}*\n` +
+          `💼 Jasa: *${serviceName}*\n` +
           `💵 Total: *${pakasir.formatRupiah(totalPayment)}*\n\n` +
           `🏦 *Metode:* ${(payment.payment_method || "").toUpperCase()}\n` +
           `🔢 *Nomor VA:* \`${payment.payment_number}\`\n\n` +
@@ -407,37 +734,39 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
       });
 
       if (sentMsg?.key) {
-        pakasir.updateOrder(order.orderId, {
-          qrisMessageKey: sentMsg.key,
-        });
+        pakasir.updateOrder(order.orderId, { qrisMessageKey: sentMsg.key });
       }
     }
 
-    // Notif owner: ada order baru
+    // Notif owner
     await notifyOwnerNewOrder(
       sock,
       order,
       sender,
       senderNumber,
-      service,
+      {
+        ...service,
+        name: serviceName,
+        price,
+        priceFormatted: pakasir.formatRupiah(price),
+      },
       result.payment,
     );
 
     console.log(`✅ Payment created: ${order.orderId} | ${senderNumber}`);
   } else {
-    // ❌ GAGAL
+    // GAGAL
     pakasir.updateOrder(order.orderId, { status: "failed" });
 
     const errorMsg = result.error || "Unknown error";
-    const payUrl = pakasir.getPaymentUrl(order.orderId, service.price, true);
+    const payUrl = pakasir.getPaymentUrl(order.orderId, price, true);
 
     await sock.sendMessage(jid, {
       text:
         `❌ *GAGAL MEMBUAT QRIS*\n\n` +
         `📦 Order: ${order.orderId}\n` +
         `❗ Error: ${errorMsg}\n\n` +
-        `🔗 *Alternatif — bayar via link:*\n${payUrl}\n\n` +
-        `Atau coba lagi nanti.\n` +
+        `🔗 *Alternatif:*\n${payUrl}\n\n` +
         `Ketik */jasa* untuk memesan ulang.`,
       interactiveButtons: [
         {
@@ -457,13 +786,12 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
       ],
     });
 
-    // Notif error ke owner
     try {
       await sock.sendMessage(numberToJid(config.ownerNumber), {
         text:
           `⚠️ *PAYMENT ERROR*\n\n` +
           `📦 ${order.orderId}\n` +
-          `💼 ${service.name}\n` +
+          `💼 ${serviceName}\n` +
           `👤 ${sender} (${senderNumber})\n` +
           `❗ ${errorMsg}`,
       });
@@ -475,7 +803,6 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
 
 // ==========================================
 // 🚫 HANDLE CANCEL ORDER
-// ✅ Dipanggil dari tombol "Batalkan Pesanan"
 // ==========================================
 async function handleCancelOrder(sock, jid, senderNumber) {
   const targetJid = isGroupChat(jid) ? numberToJid(senderNumber) : jid;
@@ -500,26 +827,26 @@ async function handleCancelOrder(sock, jid, senderNumber) {
 
   console.log(`🚫 Cancelling order: ${order.orderId} by ${senderNumber}`);
 
-  // STEP 1: Cancel di Pakasir API
+  // Cancel di Pakasir
   await pakasir.cancelTransaction(order.orderId, order.amount);
 
-  // STEP 2: Update status di DB
+  // Update DB
   pakasir.updateOrder(order.orderId, { status: "cancelled" });
 
-  // STEP 3: Delete pesan QRIS
+  // Delete pesan QRIS
   if (order.qrisMessageKey) {
     try {
       await sock.sendMessage(order.buyerJid, {
         delete: order.qrisMessageKey,
       });
-      console.log(`🗑️ QRIS message deleted on cancel: ${order.orderId}`);
+      console.log(`🗑️ QRIS deleted on cancel: ${order.orderId}`);
     } catch (e) {
-      console.error(`❌ Gagal delete QRIS on cancel:`, e.message);
+      console.error(`❌ Gagal delete QRIS:`, e.message);
     }
     await delay(800);
   }
 
-  // STEP 4: Kirim konfirmasi ke buyer
+  // Konfirmasi ke buyer
   await sock.sendMessage(targetJid, {
     text:
       `╔══════════════════════════╗\n` +
@@ -550,7 +877,7 @@ async function handleCancelOrder(sock, jid, senderNumber) {
     ],
   });
 
-  // STEP 5: Notif ke owner
+  // Notif owner
   try {
     await sock.sendMessage(numberToJid(config.ownerNumber), {
       text:
@@ -563,16 +890,13 @@ async function handleCancelOrder(sock, jid, senderNumber) {
         `└ HP: ${order.buyerNumber}\n\n` +
         `📅 Waktu: ${new Date().toLocaleString("id-ID")}`,
     });
-  } catch (e) {
-    console.error("❌ Gagal notif owner (cancel):", e.message);
-  }
+  } catch (e) {}
 
   console.log(`✅ Order cancelled: ${order.orderId}`);
 }
 
 // ==========================================
 // 🔍 CEK PEMBAYARAN
-// ✅ Jawab di private chat jika dari group
 // ==========================================
 async function handleCheckPayment(sock, jid, senderNumber) {
   const targetJid = isGroupChat(jid) ? numberToJid(senderNumber) : jid;
@@ -612,11 +936,10 @@ async function handleCheckPayment(sock, jid, senderNumber) {
     return;
   }
 
-  // Cek expired lokal
+  // Cek expired
   if (order.expiredAt && new Date(order.expiredAt) <= new Date()) {
     pakasir.updateOrder(order.orderId, { status: "expired" });
 
-    // Delete pesan QRIS yang expired
     if (order.qrisMessageKey) {
       try {
         await sock.sendMessage(order.buyerJid, {
@@ -645,7 +968,7 @@ async function handleCheckPayment(sock, jid, senderNumber) {
     return;
   }
 
-  // ✅ Cek via Pakasir Transaction Detail API
+  // Cek via Pakasir API
   const detail = await pakasir.getTransactionDetail(
     order.orderId,
     order.amount,
@@ -781,32 +1104,26 @@ async function notifyOwnerNewOrder(
 
 // ==========================================
 // ✅ NOTIF PEMBAYARAN BERHASIL
-// 1. Delete pesan QRIS
-// 2. Notif buyer
-// 3. Notif owner
 // ==========================================
 async function notifyPaymentSuccess(sock, order) {
   if (!order) return;
 
-  console.log(`\n🎉 ═══════════════════════════════════════`);
-  console.log(`🎉 PAYMENT SUCCESS: ${order.orderId}`);
-  console.log(`🎉 Buyer: ${order.buyerName} (${order.buyerNumber})`);
-  console.log(`🎉 ═══════════════════════════════════════\n`);
+  console.log(`\n🎉 PAYMENT SUCCESS: ${order.orderId}`);
 
-  // STEP 1: Delete pesan QRIS
+  // STEP 1: Delete QRIS
   if (order.qrisMessageKey) {
     try {
       await sock.sendMessage(order.buyerJid, {
         delete: order.qrisMessageKey,
       });
-      console.log(`🗑️ QRIS message deleted: ${order.orderId}`);
+      console.log(`🗑️ QRIS deleted: ${order.orderId}`);
     } catch (err) {
       console.error(`❌ Gagal delete QRIS:`, err.message);
     }
     await delay(1500);
   }
 
-  // STEP 2: Notif sukses ke buyer (private)
+  // STEP 2: Notif buyer
   try {
     await sock.sendMessage(order.buyerJid, {
       text:
@@ -821,7 +1138,7 @@ async function notifyPaymentSuccess(sock, order) {
         `📅 *Dibayar:* ${pakasir.formatDate(order.completedAt)}\n\n` +
         `📌 *Langkah selanjutnya:*\n` +
         `Tim kami akan segera menghubungi Anda\n` +
-        `untuk memulai pengerjaan project.\n\n` +
+        `untuk memulai pengerjaan.\n\n` +
         `Terima kasih telah mempercayakan\n` +
         `project Anda kepada kami! 🙏`,
     });
@@ -832,7 +1149,7 @@ async function notifyPaymentSuccess(sock, order) {
     console.error("❌ Gagal notif buyer:", err.message);
   }
 
-  // STEP 3: Notif ke owner (private)
+  // STEP 3: Notif owner
   try {
     await sock.sendMessage(numberToJid(config.ownerNumber), {
       text:
@@ -856,7 +1173,7 @@ async function notifyPaymentSuccess(sock, order) {
     console.error("❌ Gagal notif owner:", err.message);
   }
 
-  console.log(`✅ Payment SUCCESS flow done: ${order.orderId}`);
+  console.log(`✅ Payment SUCCESS done: ${order.orderId}`);
 }
 
 // ==========================================
@@ -875,18 +1192,15 @@ async function notifyPaymentFailed(sock, order, reason = "expired") {
   const emoji =
     reason === "expired" ? "⏰" : reason === "cancelled" ? "🚫" : "❌";
 
-  // Delete pesan QRIS jika ada
   if (order.qrisMessageKey) {
     try {
       await sock.sendMessage(order.buyerJid, {
         delete: order.qrisMessageKey,
       });
-      console.log(`🗑️ QRIS deleted (${reason}): ${order.orderId}`);
     } catch (e) {}
     await delay(500);
   }
 
-  // Notif ke buyer (private)
   try {
     await sock.sendMessage(order.buyerJid, {
       text:
@@ -906,11 +1220,8 @@ async function notifyPaymentFailed(sock, order, reason = "expired") {
         },
       ],
     });
-  } catch (e) {
-    console.error("❌ Gagal notif buyer (failed):", e.message);
-  }
+  } catch (e) {}
 
-  // Notif ke owner
   try {
     await sock.sendMessage(numberToJid(config.ownerNumber), {
       text:
@@ -929,13 +1240,26 @@ async function notifyPaymentFailed(sock, order, reason = "expired") {
 // EXPORT
 // ==========================================
 module.exports = {
+  // Menu
+  sendKategoriMenu,
   sendServiceMenu,
+  sendBotWaMenu,
+
+  // Detail
   sendServiceDetail,
+  sendBotWaDetail,
+
+  // Payment
   handleConfirmPayment,
   handleCancelOrder,
   handleCheckPayment,
   handleOrderHistory,
+
+  // Notif
   notifyPaymentSuccess,
   notifyPaymentFailed,
+
+  // Utils
   numberToJid,
+  parseServiceId,
 };

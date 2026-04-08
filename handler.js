@@ -124,6 +124,16 @@ async function handleMessage(sock, msg) {
         await pemesanan.sendServiceMenu(sock, jid, sender);
         break;
 
+      // Pilih kategori
+      case "kategori_website":
+        await pemesanan.sendServiceMenu(sock, jid, sender);
+        break;
+
+      case "kategori_botwa":
+      case "menu_botwa":
+        await pemesanan.sendBotWaMenu(sock, jid, sender);
+        break;
+
       // ============ SERVICE SELECTION ============
       case "service_testing":
         await pemesanan.sendServiceDetail(
@@ -165,6 +175,26 @@ async function handleMessage(sock, msg) {
         );
         break;
 
+      // ============ SERVICE SELECTION BOT WA ============
+      case "service_bot_button":
+        await pemesanan.sendBotWaDetail(
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_button",
+        );
+        break;
+      case "service_bot_text":
+        await pemesanan.sendBotWaDetail(
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_text",
+        );
+        break;
+
       // ============ KONFIRMASI BAYAR ============
       case "confirm_testing":
         await pemesanan.handleConfirmPayment(
@@ -203,6 +233,54 @@ async function handleMessage(sock, msg) {
           sender,
           senderNumber,
           "premium",
+        );
+        break;
+      
+      // Bot WA — Base
+      case "confirm_bot_button_base":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_button_base"
+        );
+        break;
+      case "confirm_bot_text_base":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_text_base"
+        );
+        break;
+
+      // Bot WA — + QRIS Addon
+      case "confirm_bot_button_qris":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_button_qris"
+        );
+        break;
+      case "confirm_bot_text_qris":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_text_qris"
+        );
+        break;
+
+      // Bot WA — + Image Gen Addon
+      case "confirm_bot_button_imggen":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_button_imggen"
+        );
+        break;
+      case "confirm_bot_text_imggen":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_text_imggen"
+        );
+        break;
+
+      // Bot WA — + All Addon
+      case "confirm_bot_button_all":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_button_all"
+        );
+        break;
+      case "confirm_bot_text_all":
+        await pemesanan.handleConfirmPayment(
+          sock, jid, sender, senderNumber, "bot_text_all"
         );
         break;
 
@@ -417,14 +495,20 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
 
   sections.push(
     {
-      title: "🛒 Pemesanan",
-      highlight_label: "🔥 Baru",
+      title: "🛒 Pemesanan Jasa",
+      highlight_label: "🔥 Tersedia",
       rows: [
         {
           header: "💼 Website",
-          title: "Jasa Pemesanan Website",
-          description: "Lihat & pilih paket jasa pembuatan website",
-          id: "menu_jasa",
+          title: "Jasa Pembuatan Website",
+          description: "Landing Page, Custom, Premium Web",
+          id: "kategori_website",
+        },
+        {
+          header: "🤖 Bot WA",
+          title: "Jasa Pembuatan Bot WA",
+          description: "Bot Button / Text + Addon QRIS & Image",
+          id: "kategori_botwa",
         },
       ],
     },
