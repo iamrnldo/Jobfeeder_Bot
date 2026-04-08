@@ -39,7 +39,7 @@ module.exports = {
       id: "landing",
       name: "Landing Page Starter",
       price: 500,
-      priceFormatted: "Rp 1.400.000",
+      priceFormatted: "Rp 500",
       emoji: "🌐",
       description: "Landing page profesional 1 halaman",
       features: [

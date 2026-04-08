@@ -334,7 +334,7 @@ async function sendServiceMenu(sock, jid, sender) {
       `║  💼 *JASA PEMBUATAN WEB*  ║\n` +
       `╚══════════════════════════╝\n\n` +
       `Halo *${sender}*! 👋\n\n` +
-      `🌐 *Landing Page Starter* — Rp 1.400.000\n` +
+      `🌐 *Landing Page Starter* — Rp 500\n` +
       `⚙️ *Custom Dynamic Web* — Rp 2.500.000\n` +
       `🚀 *Full-Service Premium* — Rp 3.500.000\n\n` +
       `💳 Pembayaran via *QRIS* (semua e-wallet & bank)\n\n` +
@@ -994,7 +994,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
       highlight_label: "🔥 Baru",
       rows: [
         {
-          header: "🌐 Rp 1.400.000",
+          header: "🌐 Rp 500",
           title: "Landing Page Starter",
           description: "Landing page responsif profesional",
           id: "service_landing",
@@ -1134,7 +1134,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
       `Halo *${sender}*! 👋\n` +
       `Role: *${roleText}*\n\n` +
       `💼 *Jasa Pembuatan Website*\n` +
-      `├ 🌐 Landing Page — Rp 1.400.000\n` +
+      `├ 🌐 Landing Page — Rp 500\n` +
       `├ ⚙️ Custom Web — Rp 2.500.000\n` +
       `└ 🚀 Premium Web — Rp 3.500.000\n\n` +
       `💳 Pembayaran via *QRIS*\n\n` +
