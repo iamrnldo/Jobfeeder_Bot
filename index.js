@@ -3,7 +3,7 @@
 //  Koneksi WA, HTTP Server, Webhook Pakasir
 //  ✅ Webhook sesuai dokumentasi Pakasir
 // ==========================================
-
+const db = require("./database_api");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -170,6 +170,13 @@ server.listen(PORT, () => {
   console.log(`   /ping | /status | /health`);
   console.log(`   /webhook/pakasir (POST)\n`);
 });
+
+setInterval(async () => {
+  if (botStatus.connected) {
+    console.log("⏰ Periodic sync: Local ↔ MockAPI");
+    await db.forceSync().catch(console.error);
+  }
+}, 5 * 60 * 1000); // setiap 5 menit
 
 // ==========================================
 // ✅ WEBHOOK HANDLER
@@ -348,7 +355,18 @@ async function startBot() {
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   ✅ BOT + PAKASIR QRIS READY!       ║");
       console.log("╚══════════════════════════════════════╝\n");
+
+      // ✅ Cek koneksi MockAPI saat bot pertama connect
+      db.checkAPIHealth().then((isOk) => {
+        if (isOk) {
+          // Sync data dua arah
+          db.forceSync().catch(console.error);
+        }
+      });
     }
+
+
+
 
     if (connection === "close") {
       botStatus.connected = false;
