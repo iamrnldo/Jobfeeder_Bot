@@ -3,6 +3,7 @@
 //  Command, Menu, Admin, PAYMENT System
 //  ✅ Sesuai dokumentasi Pakasir
 //  ✅ Pemesanan & QRIS selalu di private chat
+//  ✅ Tombol batalkan pesanan di pesan QRIS
 // ==========================================
 
 const fs = require("fs");
@@ -248,6 +249,9 @@ async function handleMessage(sock, msg) {
         await handleConfirmPayment(sock, jid, sender, senderNumber, "premium");
         break;
 
+      // ============ BATALKAN PESANAN ============
+      // ✅ Dipanggil dari tombol di pesan QRIS
+      case "batalkan_pesanan":
       case "cancel_order":
         await handleCancelOrder(sock, jid, senderNumber);
         break;
@@ -385,11 +389,9 @@ async function sendServiceMenu(sock, jid, sender) {
     id: `service_${s.id}`,
   }));
 
-  // Pisahkan testing dan produksi
   const testingRows = rows.filter((r) => r.id === "service_testing");
   const productionRows = rows.filter((r) => r.id !== "service_testing");
 
-  // Bangun sections
   const sections = [];
 
   if (testingRows.length > 0) {
@@ -496,7 +498,7 @@ async function sendServiceDetailPrivate(
         `💼 Jasa: *${existingOrder.serviceName}*\n` +
         `💰 Total: *${pakasir.formatRupiah(existingOrder.totalPayment)}*\n\n` +
         `Ketik */cek* untuk cek status pembayaran.\n` +
-        `Atau tunggu expired untuk pesan baru.`,
+        `Atau ketik */batalkan* untuk batalkan pesanan.`,
     });
     return;
   }
@@ -529,7 +531,7 @@ async function sendServiceDetailPrivate(
         name: "quick_reply",
         buttonParamsJson: JSON.stringify({
           display_text: "❌ Batal",
-          id: "cancel_order",
+          id: "batalkan_pesanan",
         }),
       },
       {
@@ -634,7 +636,6 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
     const totalPayment = payment.total_payment || service.price;
     const fee = payment.fee || 0;
 
-    // Update order
     pakasir.updateOrder(order.orderId, {
       fee,
       totalPayment,
@@ -650,7 +651,7 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
       const qrBuffer = await pakasir.generateQRImage(payment.payment_number);
 
       if (qrBuffer) {
-        // ✅ Kirim gambar QR ke PRIVATE CHAT
+        // ✅ Kirim QR Image + Tombol Batalkan Pesanan
         const sentMsg = await sock.sendMessage(jid, {
           image: qrBuffer,
           caption:
@@ -670,11 +671,23 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
             `2. Pilih Scan QR / QRIS\n` +
             `3. Scan QR code di atas\n` +
             `4. Bayar sebesar *${pakasir.formatRupiah(totalPayment)}*\n\n` +
-            `⏰ *Berlaku sampai:*\n${pakasir.formatDate(payment.expired_at)}\n\n` +
-            `📋 Ketik */cek* setelah bayar untuk verifikasi`,
+            `⏰ *Berlaku sampai:*\n` +
+            `${pakasir.formatDate(payment.expired_at)}\n\n` +
+            `📋 Ketik */cek* setelah bayar\n` +
+            `🚫 Tekan tombol di bawah untuk batalkan`,
+          // ✅ Tombol batalkan langsung di pesan QRIS
+          interactiveButtons: [
+            {
+              name: "quick_reply",
+              buttonParamsJson: JSON.stringify({
+                display_text: "🚫 Batalkan Pesanan",
+                id: "batalkan_pesanan",
+              }),
+            },
+          ],
         });
 
-        // ✅ Simpan messageKey untuk di-delete nanti
+        // ✅ Simpan messageKey untuk di-delete saat berhasil/batal
         if (sentMsg?.key) {
           pakasir.updateOrder(order.orderId, {
             qrisMessageKey: sentMsg.key,
@@ -684,7 +697,7 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
           );
         }
       } else {
-        // Fallback: gagal generate gambar → kirim link
+        // Fallback: gagal generate gambar → kirim link + tombol batalkan
         const payUrl = pakasir.getPaymentUrl(
           order.orderId,
           service.price,
@@ -698,7 +711,17 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
             `💵 Total: *${pakasir.formatRupiah(totalPayment)}*\n\n` +
             `🔗 *Link Pembayaran:*\n${payUrl}\n\n` +
             `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
-            `📋 Ketik */cek* setelah bayar`,
+            `📋 Ketik */cek* setelah bayar\n` +
+            `🚫 Tekan tombol di bawah untuk batalkan`,
+          interactiveButtons: [
+            {
+              name: "quick_reply",
+              buttonParamsJson: JSON.stringify({
+                display_text: "🚫 Batalkan Pesanan",
+                id: "batalkan_pesanan",
+              }),
+            },
+          ],
         });
 
         if (sentMsg?.key) {
@@ -708,7 +731,7 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
         }
       }
     } else {
-      // Non-QRIS (Virtual Account dll)
+      // Non-QRIS (Virtual Account dll) + tombol batalkan
       const sentMsg = await sock.sendMessage(jid, {
         text:
           `╔══════════════════════════╗\n` +
@@ -720,7 +743,17 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
           `🏦 *Metode:* ${(payment.payment_method || "").toUpperCase()}\n` +
           `🔢 *Nomor VA:* \`${payment.payment_number}\`\n\n` +
           `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
-          `📋 Ketik */cek* setelah bayar`,
+          `📋 Ketik */cek* setelah bayar\n` +
+          `🚫 Tekan tombol di bawah untuk batalkan`,
+        interactiveButtons: [
+          {
+            name: "quick_reply",
+            buttonParamsJson: JSON.stringify({
+              display_text: "🚫 Batalkan Pesanan",
+              id: "batalkan_pesanan",
+            }),
+          },
+        ],
       });
 
       if (sentMsg?.key) {
@@ -730,7 +763,7 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
       }
     }
 
-    // Notif ke owner: ada order baru
+    // Notif owner: ada order baru
     await notifyOwnerNewOrder(
       sock,
       order,
@@ -792,12 +825,13 @@ async function processPayment(sock, jid, sender, senderNumber, serviceId) {
 
 // ==========================================
 // 🚫 HANDLE CANCEL ORDER
+// ✅ Dipanggil dari tombol "Batalkan Pesanan"
+//    di pesan QRIS atau dari command
 // ==========================================
 async function handleCancelOrder(sock, jid, senderNumber) {
-  // Kalau dari group → proses & jawab di private
+  // Kalau dari group → jawab di private
   const targetJid = isGroupChat(jid) ? numberToJid(senderNumber) : jid;
 
-  // Kalau dari group, kasih notif singkat di group
   if (isGroupChat(jid)) {
     await sock.sendMessage(jid, {
       text: `🚫 Pembatalan diproses di *private chat* kamu.`,
@@ -806,39 +840,96 @@ async function handleCancelOrder(sock, jid, senderNumber) {
 
   const order = pakasir.getPendingOrderByBuyer(senderNumber);
 
-  if (order) {
-    // Cancel di Pakasir
-    await pakasir.cancelTransaction(order.orderId, order.amount);
-
-    // Update status
-    pakasir.updateOrder(order.orderId, { status: "cancelled" });
-
-    // Delete pesan QRIS jika ada
-    if (order.qrisMessageKey) {
-      try {
-        await sock.sendMessage(order.buyerJid, {
-          delete: order.qrisMessageKey,
-        });
-        console.log(`🗑️ QRIS message deleted on cancel: ${order.orderId}`);
-      } catch (e) {
-        console.error(`❌ Gagal delete QRIS on cancel:`, e.message);
-      }
-    }
-
+  if (!order) {
     await sock.sendMessage(targetJid, {
+      text:
+        `🚫 *TIDAK ADA PESANAN AKTIF*\n\n` +
+        `Tidak ditemukan pesanan yang sedang pending.\n\n` +
+        `Ketik *menu* untuk kembali.`,
+    });
+    return;
+  }
+
+  console.log(`🚫 Cancelling order: ${order.orderId} by ${senderNumber}`);
+
+  // ==========================================
+  // STEP 1: Cancel di Pakasir API
+  // ==========================================
+  await pakasir.cancelTransaction(order.orderId, order.amount);
+
+  // ==========================================
+  // STEP 2: Update status di DB
+  // ==========================================
+  pakasir.updateOrder(order.orderId, { status: "cancelled" });
+
+  // ==========================================
+  // STEP 3: Delete pesan QRIS
+  // ==========================================
+  if (order.qrisMessageKey) {
+    try {
+      await sock.sendMessage(order.buyerJid, {
+        delete: order.qrisMessageKey,
+      });
+      console.log(`🗑️ QRIS message deleted on cancel: ${order.orderId}`);
+    } catch (e) {
+      console.error(`❌ Gagal delete QRIS on cancel:`, e.message);
+    }
+    await delay(800);
+  }
+
+  // ==========================================
+  // STEP 4: Kirim konfirmasi ke buyer
+  // ==========================================
+  await sock.sendMessage(targetJid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  🚫 *PESANAN DIBATALKAN*  ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `Pesanan kamu telah berhasil dibatalkan.\n\n` +
+      `📦 *Order:* ${order.orderId}\n` +
+      `💼 *Jasa:* ${order.serviceName}\n` +
+      `💰 *Total:* ${pakasir.formatRupiah(order.totalPayment)}\n` +
+      `🚫 *Status:* Dibatalkan\n` +
+      `📅 *Waktu:* ${new Date().toLocaleString("id-ID")}\n\n` +
+      `Jika ingin memesan kembali, ketik */jasa*`,
+    interactiveButtons: [
+      {
+        name: "quick_reply",
+        buttonParamsJson: JSON.stringify({
+          display_text: "🛍️ Pesan Lagi",
+          id: "menu_jasa",
+        }),
+      },
+      {
+        name: "quick_reply",
+        buttonParamsJson: JSON.stringify({
+          display_text: "🏠 Menu Utama",
+          id: "menu",
+        }),
+      },
+    ],
+  });
+
+  // ==========================================
+  // STEP 5: Notif ke owner
+  // ==========================================
+  try {
+    await sock.sendMessage(numberToJid(config.ownerNumber), {
       text:
         `🚫 *PESANAN DIBATALKAN*\n\n` +
         `📦 Order: ${order.orderId}\n` +
-        `💼 Jasa: ${order.serviceName}\n\n` +
-        `Ketik *menu* untuk kembali ke menu utama.`,
+        `💼 Jasa: ${order.serviceName}\n` +
+        `💰 Total: ${pakasir.formatRupiah(order.totalPayment)}\n\n` +
+        `👤 *Dibatalkan oleh:*\n` +
+        `├ Nama: ${order.buyerName}\n` +
+        `└ HP: ${order.buyerNumber}\n\n` +
+        `📅 Waktu: ${new Date().toLocaleString("id-ID")}`,
     });
-
-    console.log(`🚫 Order cancelled: ${order.orderId} by ${senderNumber}`);
-  } else {
-    await sock.sendMessage(targetJid, {
-      text: `🚫 Tidak ada pesanan aktif untuk dibatalkan.\nKetik *menu* untuk kembali.`,
-    });
+  } catch (e) {
+    console.error("❌ Gagal notif owner (cancel):", e.message);
   }
+
+  console.log(`✅ Order cancelled: ${order.orderId}`);
 }
 
 // ==========================================
@@ -846,10 +937,8 @@ async function handleCancelOrder(sock, jid, senderNumber) {
 // ✅ Jawab di private chat jika dari group
 // ==========================================
 async function handleCheckPayment(sock, jid, senderNumber) {
-  // Target jawab
   const targetJid = isGroupChat(jid) ? numberToJid(senderNumber) : jid;
 
-  // Kasih notif singkat di group
   if (isGroupChat(jid)) {
     await sock.sendMessage(jid, {
       text: `🔍 Status pembayaran dikirim ke *private chat* kamu!`,
@@ -859,7 +948,6 @@ async function handleCheckPayment(sock, jid, senderNumber) {
   const order = pakasir.getPendingOrderByBuyer(senderNumber);
 
   if (!order) {
-    // Tidak ada pending → cek riwayat terakhir
     const orders = pakasir.loadOrders();
     const lastOrder = orders
       .filter((o) => o.buyerNumber === senderNumber)
@@ -889,6 +977,16 @@ async function handleCheckPayment(sock, jid, senderNumber) {
   // Cek expired lokal
   if (order.expiredAt && new Date(order.expiredAt) <= new Date()) {
     pakasir.updateOrder(order.orderId, { status: "expired" });
+
+    // Delete pesan QRIS yang expired
+    if (order.qrisMessageKey) {
+      try {
+        await sock.sendMessage(order.buyerJid, {
+          delete: order.qrisMessageKey,
+        });
+      } catch (e) {}
+    }
+
     await sock.sendMessage(targetJid, {
       text:
         `⏰ *PEMBAYARAN EXPIRED*\n\n` +
@@ -896,6 +994,15 @@ async function handleCheckPayment(sock, jid, senderNumber) {
         `💼 Jasa: *${order.serviceName}*\n\n` +
         `QRIS sudah tidak berlaku.\n` +
         `Ketik */jasa* untuk pesan baru.`,
+      interactiveButtons: [
+        {
+          name: "quick_reply",
+          buttonParamsJson: JSON.stringify({
+            display_text: "🔄 Pesan Ulang",
+            id: "menu_jasa",
+          }),
+        },
+      ],
     });
     return;
   }
@@ -910,7 +1017,6 @@ async function handleCheckPayment(sock, jid, senderNumber) {
     const status = (detail.transaction.status || "").toLowerCase();
 
     if (status === "completed") {
-      // ✅ LUNAS!
       pakasir.updateOrder(order.orderId, {
         status: "completed",
         completedAt:
@@ -947,6 +1053,13 @@ async function handleCheckPayment(sock, jid, senderNumber) {
           id: "menu_cek_bayar",
         }),
       },
+      {
+        name: "quick_reply",
+        buttonParamsJson: JSON.stringify({
+          display_text: "🚫 Batalkan Pesanan",
+          id: "batalkan_pesanan",
+        }),
+      },
     ],
   });
 }
@@ -955,7 +1068,6 @@ async function handleCheckPayment(sock, jid, senderNumber) {
 // 📋 RIWAYAT ORDER (USER)
 // ==========================================
 async function handleOrderHistory(sock, jid, senderNumber) {
-  // Jawab di private jika dari group
   const targetJid = isGroupChat(jid) ? numberToJid(senderNumber) : jid;
 
   if (isGroupChat(jid)) {
@@ -1012,6 +1124,7 @@ async function handleAdminListOrders(sock, jid) {
   const all = pakasir.loadOrders();
   const completed = all.filter((o) => o.status === "completed").length;
   const pending = all.filter((o) => o.status === "pending").length;
+  const cancelled = all.filter((o) => o.status === "cancelled").length;
   const revenue = all
     .filter((o) => o.status === "completed")
     .reduce((s, o) => s + o.amount, 0);
@@ -1023,6 +1136,7 @@ async function handleAdminListOrders(sock, jid) {
     `📊 *Ringkasan:*\n` +
     `├ ✅ Lunas: ${completed}\n` +
     `├ ⏳ Pending: ${pending}\n` +
+    `├ 🚫 Dibatalkan: ${cancelled}\n` +
     `├ 📦 Total: ${all.length}\n` +
     `└ 💰 Revenue: ${pakasir.formatRupiah(revenue)}\n\n` +
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -1091,7 +1205,6 @@ async function notifyPaymentSuccess(sock, order) {
 
   // ==========================================
   // STEP 1: DELETE PESAN QRIS
-  // buyerJid sudah private karena disimpan saat processPayment
   // ==========================================
   if (order.qrisMessageKey) {
     try {
@@ -1101,10 +1214,7 @@ async function notifyPaymentSuccess(sock, order) {
       console.log(`🗑️ QRIS message deleted: ${order.orderId}`);
     } catch (err) {
       console.error(`❌ Gagal delete QRIS message:`, err.message);
-      // Lanjut meski gagal delete
     }
-
-    // Jeda sebentar setelah delete
     await delay(1500);
   }
 
@@ -1631,7 +1741,9 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
   }
 
   if (isOwner(target)) {
-    await sock.sendMessage(jid, { text: "👑 Nomor tersebut adalah Owner." });
+    await sock.sendMessage(jid, {
+      text: "👑 Nomor tersebut adalah Owner.",
+    });
     return;
   }
 
