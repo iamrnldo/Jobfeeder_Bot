@@ -11,6 +11,7 @@ const config = require("./config");
 // PATH DATABASE ADMIN
 // ==========================================
 const ADMIN_DB_PATH = path.join(__dirname, "database", "admin.json");
+const MENU_CONFIG_PATH = path.join(__dirname, "database", "menu_config.json");
 
 // ==========================================
 // ADMIN DATABASE FUNCTIONS
@@ -33,6 +34,45 @@ function saveAdmins(admins) {
   const dir = path.dirname(ADMIN_DB_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(ADMIN_DB_PATH, JSON.stringify(admins, null, 2));
+}
+
+// ==========================================
+// MENU CONFIG FUNCTIONS
+// ==========================================
+function loadMenuConfig() {
+  try {
+    const dir = path.dirname(MENU_CONFIG_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(MENU_CONFIG_PATH)) {
+      const defaultConfig = {
+        menuImageUrl: "[picsum.photos](https://picsum.photos/800/400)",
+        menuImagePath: null,
+        menuImageCaption: "🤖 Selamat datang di JobFeeder Bot!",
+        updatedAt: null,
+        updatedBy: null,
+      };
+      fs.writeFileSync(
+        MENU_CONFIG_PATH,
+        JSON.stringify(defaultConfig, null, 2),
+      );
+      return defaultConfig;
+    }
+    return JSON.parse(fs.readFileSync(MENU_CONFIG_PATH, "utf-8"));
+  } catch {
+    return {
+      menuImageUrl: "[picsum.photos](https://picsum.photos/800/400)",
+      menuImagePath: null,
+      menuImageCaption: "🤖 Selamat datang di JobFeeder Bot!",
+      updatedAt: null,
+      updatedBy: null,
+    };
+  }
+}
+
+function saveMenuConfig(cfg) {
+  const dir = path.dirname(MENU_CONFIG_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(MENU_CONFIG_PATH, JSON.stringify(cfg, null, 2));
 }
 
 // ==========================================
@@ -61,7 +101,16 @@ function isAdminOrOwner(number) {
 }
 
 // ==========================================
-// HANDLER: ADD ADMIN (dari command)
+// STATE: PENDING MENU PHOTO UPDATE
+// ==========================================
+const pendingMenuPhotoUpdate = new Set();
+
+function isPendingMenuPhoto(senderNumber) {
+  return pendingMenuPhotoUpdate.has(senderNumber);
+}
+
+// ==========================================
+// HANDLER: ADD ADMIN
 // ==========================================
 async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
   if (!isAdminOrOwner(senderNumber)) {
@@ -314,6 +363,112 @@ async function handleAdminListOrders(sock, jid) {
 }
 
 // ==========================================
+// ADMIN: HANDLER UPDATE FOTO MENU
+// ==========================================
+async function handleUpdateMenuPhoto(sock, jid, senderNumber) {
+  if (!isAdminOrOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  pendingMenuPhotoUpdate.add(senderNumber);
+
+  await sock.sendMessage(jid, {
+    text:
+      `📸 *UPDATE FOTO MENU*\n\n` +
+      `Kirim foto yang ingin dijadikan\n` +
+      `gambar untuk tampilan */menu*\n\n` +
+      `⚠️ *Ketentuan:*\n` +
+      `• Format: JPG / PNG\n` +
+      `• Resolusi minimal: 400x200\n` +
+      `• Kirim sebagai *foto* (bukan dokumen)\n\n` +
+      `Atau ketik */cancelfoto* untuk batal.`,
+  });
+}
+
+// ==========================================
+// ADMIN: HANDLE UPLOAD FOTO MENU
+// ==========================================
+async function handleMenuPhotoUpload(sock, jid, senderNumber, msg) {
+  if (!pendingMenuPhotoUpdate.has(senderNumber)) return false;
+
+  const m = msg.message;
+  const imageMsg = m?.imageMessage;
+
+  if (!imageMsg) {
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *Bukan foto!*\n\n` +
+        `Kirim sebagai *foto* (bukan dokumen).\n` +
+        `Atau ketik */cancelfoto* untuk batal.`,
+    });
+    return true;
+  }
+
+  try {
+    await sock.sendMessage(jid, { text: `⏳ Menyimpan foto menu...` });
+
+    const { downloadMediaMessage } = require("atexovi-baileys");
+    const buffer = await downloadMediaMessage(msg, "buffer", {});
+
+    const menuImgDir = path.join(__dirname, "database");
+    if (!fs.existsSync(menuImgDir))
+      fs.mkdirSync(menuImgDir, { recursive: true });
+
+    const menuImgPath = path.join(menuImgDir, "menu_image.jpg");
+    fs.writeFileSync(menuImgPath, buffer);
+
+    const menuConfig = loadMenuConfig();
+    menuConfig.menuImagePath = menuImgPath;
+    menuConfig.menuImageUrl = null;
+    menuConfig.updatedAt = new Date().toISOString();
+    menuConfig.updatedBy = senderNumber;
+    saveMenuConfig(menuConfig);
+
+    pendingMenuPhotoUpdate.delete(senderNumber);
+
+    await sock.sendMessage(jid, {
+      text:
+        `✅ *FOTO MENU DIPERBARUI!*\n\n` +
+        `Gambar berhasil disimpan.\n` +
+        `Ketik */menu* untuk melihat hasilnya! 👀\n\n` +
+        `📅 Diperbarui: ${new Date().toLocaleString("id-ID")}\n` +
+        `👤 Oleh: ${senderNumber}`,
+    });
+
+    console.log(`📸 Menu image updated by ${senderNumber}`);
+    return true;
+  } catch (err) {
+    console.error("❌ Gagal simpan foto menu:", err.message);
+    pendingMenuPhotoUpdate.delete(senderNumber);
+
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *GAGAL MENYIMPAN FOTO*\n\n` +
+        `Error: ${err.message}\n\n` +
+        `Coba lagi dengan ketik */updatemenu*`,
+    });
+    return true;
+  }
+}
+
+// ==========================================
+// ADMIN: CANCEL UPDATE FOTO MENU
+// ==========================================
+async function handleCancelMenuPhoto(sock, jid, senderNumber) {
+  if (pendingMenuPhotoUpdate.has(senderNumber)) {
+    pendingMenuPhotoUpdate.delete(senderNumber);
+    await sock.sendMessage(jid, {
+      text: `🚫 *Update foto menu dibatalkan.*\n\nKetik */menu* untuk kembali.`,
+    });
+  } else {
+    await sock.sendMessage(jid, {
+      text: `ℹ️ Tidak ada proses update foto yang aktif.`,
+    });
+  }
+}
+
+// ==========================================
 // KIRIM SECTION ADMIN PANEL (untuk menu utama)
 // ==========================================
 function getAdminMenuSection(senderNumber) {
@@ -348,6 +503,12 @@ function getAdminMenuSection(senderNumber) {
         description: "Semua pesanan masuk",
         id: "admin_orders",
       },
+      {
+        header: "📸",
+        title: "Update Foto Menu",
+        description: "Ganti gambar tampilan /menu",
+        id: "admin_update_menu_photo",
+      },
     ],
   };
 }
@@ -362,12 +523,22 @@ module.exports = {
   handleDelAdminFromList,
   handleAdminListOrders,
 
+  // Menu photo
+  handleUpdateMenuPhoto,
+  handleMenuPhotoUpload,
+  handleCancelMenuPhoto,
+  isPendingMenuPhoto,
+
+  // Menu config
+  loadMenuConfig,
+  saveMenuConfig,
+
   // Send functions
   sendAdminList,
   sendAdminDeleteList,
   getAdminMenuSection,
 
-  // Utility (dipakai file lain)
+  // Utility
   loadAdmins,
   saveAdmins,
   isOwner,
