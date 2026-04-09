@@ -4,10 +4,17 @@
 // ==========================================
 
 const config = require("./config");
+const fs = require("fs");
+const path = require("path");
 
 // Import sub-handlers
 const pemesanan = require("./handler_pemesanan");
 const admin = require("./handler_admin");
+
+// ==========================================
+// PATH BANNER
+// ==========================================
+const BANNER_PATH = path.join(__dirname, "images", "menu", "banner_menu.jpg");
 
 // ==========================================
 // HELPERS
@@ -80,7 +87,14 @@ async function handleMessage(sock, msg) {
     `📩 [${isGroupChat(jid) ? "GROUP" : "PRIVATE"}] ${sender} (${senderNumber}): ${text || "[non-text]"}`,
   );
 
-  if (!text) return;
+  // ==========================================
+  // HANDLE NON-TEXT (gambar, dll)
+  // Cek dulu apakah ada gambar masuk untuk edit banner
+  // ==========================================
+  if (!text) {
+    await admin.handleIncomingImage(sock, msg, jid, senderNumber);
+    return;
+  }
 
   // ==========================================
   // PARAMETERIZED COMMANDS
@@ -110,6 +124,7 @@ async function handleMessage(sock, msg) {
       case "/menu":
       case "help":
       case "/help":
+      case "menu_back":
         await sendMainMenu(sock, jid, sender, senderNumber);
         break;
 
@@ -235,52 +250,84 @@ async function handleMessage(sock, msg) {
           "premium",
         );
         break;
-      
+
       // Bot WA — Base
       case "confirm_bot_button_base":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_button_base"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_button_base",
         );
         break;
       case "confirm_bot_text_base":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_text_base"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_text_base",
         );
         break;
 
       // Bot WA — + QRIS Addon
       case "confirm_bot_button_qris":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_button_qris"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_button_qris",
         );
         break;
       case "confirm_bot_text_qris":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_text_qris"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_text_qris",
         );
         break;
 
       // Bot WA — + Image Gen Addon
       case "confirm_bot_button_imggen":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_button_imggen"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_button_imggen",
         );
         break;
       case "confirm_bot_text_imggen":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_text_imggen"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_text_imggen",
         );
         break;
 
       // Bot WA — + All Addon
       case "confirm_bot_button_all":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_button_all"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_button_all",
         );
         break;
       case "confirm_bot_text_all":
         await pemesanan.handleConfirmPayment(
-          sock, jid, sender, senderNumber, "bot_text_all"
+          sock,
+          jid,
+          sender,
+          senderNumber,
+          "bot_text_all",
         );
         break;
 
@@ -352,6 +399,18 @@ async function handleMessage(sock, msg) {
         break;
 
       // ==========================================
+      // 🖼️ ADMIN: EDIT BANNER MENU
+      // ==========================================
+      case "admin_banner":
+      case "edit_banner":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleEditBanner(sock, jid, senderNumber);
+        break;
+
+      // ==========================================
       // 📨 DEMO FITUR MESSAGE
       // ==========================================
       case "button":
@@ -393,12 +452,13 @@ async function handleMessage(sock, msg) {
         });
         break;
 
-      case "menu_ping":
+      case "menu_ping": {
         const ps = Date.now();
         await sock.sendMessage(jid, {
           text: `🏓 *PONG!*\nSpeed: ${Date.now() - ps}ms\nStatus: Online ✅`,
         });
         break;
+      }
 
       case "menu_creator":
         await sock.sendMessage(jid, {
@@ -419,12 +479,13 @@ async function handleMessage(sock, msg) {
         });
         break;
 
-      case "btn_ping":
+      case "btn_ping": {
         const s = Date.now();
         await sock.sendMessage(jid, {
           text: `🏓 Pong! Speed: ${Date.now() - s}ms`,
         });
         break;
+      }
 
       case "list_games":
         await sock.sendMessage(jid, {
@@ -470,14 +531,19 @@ async function handleMessage(sock, msg) {
 }
 
 // ==========================================
-// ⭐ MENU UTAMA — INTERACTIVE LIST
+// ⭐ MENU UTAMA
+// Kirim banner_menu.jpg + interactive list
+// Fallback ke text jika banner tidak ada
 // ==========================================
 async function sendMainMenu(sock, jid, sender, senderNumber) {
   const hasTestingService = config.services.some((s) => s.id === "testing");
 
+  // ==========================================
+  // BUILD SECTIONS
+  // ==========================================
   const sections = [];
 
-  // Testing section (jika ada)
+  // Testing section (jika ada di config)
   if (hasTestingService) {
     sections.push({
       title: "🧪 Testing Payment",
@@ -589,25 +655,35 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     sections.push(admin.getAdminMenuSection(senderNumber));
   }
 
+  // ==========================================
+  // ROLE TEXT
+  // ==========================================
   const roleText = admin.isOwner(senderNumber)
     ? "👑 Owner"
     : admin.isAdmin(senderNumber)
       ? "🛡️ Admin"
       : "👤 User";
 
-  await sock.sendMessage(jid, {
-    text:
-      `╔══════════════════════════╗\n` +
-      `║  🤖 *MENU BOT WA*        ║\n` +
-      `╚══════════════════════════╝\n\n` +
-      `Halo *${sender}*! 👋\n` +
-      `Role: *${roleText}*\n\n` +
-      `🛒 *Jasa Pemesanan Website*\n` +
-      `└ Pilih dari menu untuk lihat paket\n\n` +
-      `💳 Pembayaran via *QRIS*\n` +
-      `🔒 Pemesanan di *private chat*\n\n` +
-      `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
-      `Pilih menu di bawah 👇`,
+  // ==========================================
+  // CAPTION
+  // ==========================================
+  const caption =
+    `╔══════════════════════════╗\n` +
+    `║  🤖 *MENU BOT WA*        ║\n` +
+    `╚══════════════════════════╝\n\n` +
+    `Halo *${sender}*! 👋\n` +
+    `Role: *${roleText}*\n\n` +
+    `🛒 *Jasa Pemesanan Website*\n` +
+    `└ Pilih dari menu untuk lihat paket\n\n` +
+    `💳 Pembayaran via *QRIS*\n` +
+    `🔒 Pemesanan di *private chat*\n\n` +
+    `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
+    `Pilih menu di bawah 👇`;
+
+  // ==========================================
+  // INTERACTIVE BUTTON PAYLOAD
+  // ==========================================
+  const interactivePayload = {
     title: config.botName,
     footer: `© 2026 ${config.botName} | Pakasir QRIS`,
     interactiveButtons: [
@@ -619,6 +695,39 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
         }),
       },
     ],
+  };
+
+  // ==========================================
+  // CEK BANNER
+  // ==========================================
+  const bannerExists = fs.existsSync(BANNER_PATH);
+
+  if (bannerExists) {
+    try {
+      const bannerBuffer = fs.readFileSync(BANNER_PATH);
+
+      await sock.sendMessage(jid, {
+        image: bannerBuffer,
+        caption,
+        ...interactivePayload,
+      });
+
+      console.log(`🖼️ Menu dikirim dengan banner (${senderNumber})`);
+      return;
+    } catch (err) {
+      // Banner ada tapi gagal dibaca/dikirim — fallback ke text
+      console.error(`⚠️ Gagal kirim banner, fallback ke text: ${err.message}`);
+    }
+  } else {
+    console.log(`📋 Banner tidak ditemukan, kirim menu text (${senderNumber})`);
+  }
+
+  // ==========================================
+  // FALLBACK: Text saja (tanpa banner)
+  // ==========================================
+  await sock.sendMessage(jid, {
+    text: caption,
+    ...interactivePayload,
   });
 }
 
