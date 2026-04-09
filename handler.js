@@ -88,8 +88,8 @@ async function handleMessage(sock, msg) {
   );
 
   // ==========================================
-  // HANDLE NON-TEXT (gambar, dll)
-  // Cek dulu apakah ada gambar masuk untuk edit banner
+  // HANDLE NON-TEXT
+  // Cek gambar masuk untuk edit banner
   // ==========================================
   if (!text) {
     await admin.handleIncomingImage(sock, msg, jid, senderNumber);
@@ -113,24 +113,15 @@ async function handleMessage(sock, msg) {
   }
 
   // ==========================================
-  // GROUP: Tambah group dari list (groupadd_xxxx@g.us)
+  // GROUP ADMIN MANAGER — dynamic routing
+  // grpselect_  grppromote_  grpdemote_
   // ==========================================
-  if (text.startsWith("groupadd_")) {
-    if (admin.isAdminOrOwner(senderNumber)) {
-      const groupJid = rawText.replace(/^groupadd_/i, "");
-      await admin.executeAddGroup(sock, jid, senderNumber, groupJid);
-    }
-    return;
-  }
-
-  // ==========================================
-  // GROUP: Hapus group dari list (groupremove_xxxx@g.us)
-  // ==========================================
-  if (text.startsWith("groupremove_")) {
-    if (admin.isAdminOrOwner(senderNumber)) {
-      const groupJid = rawText.replace(/^groupremove_/i, "");
-      await admin.executeRemoveGroup(sock, jid, senderNumber, groupJid);
-    }
+  if (
+    text.startsWith("grpselect_") ||
+    text.startsWith("grppromote_") ||
+    text.startsWith("grpdemote_")
+  ) {
+    await admin.handleGroupAdminRouter(sock, msg, jid, senderNumber, rawText);
     return;
   }
 
@@ -161,7 +152,6 @@ async function handleMessage(sock, msg) {
         await pemesanan.sendServiceMenu(sock, jid, sender);
         break;
 
-      // Pilih kategori
       case "kategori_website":
         await pemesanan.sendServiceMenu(sock, jid, sender);
         break;
@@ -222,6 +212,7 @@ async function handleMessage(sock, msg) {
           "bot_button",
         );
         break;
+
       case "service_bot_text":
         await pemesanan.sendBotWaDetail(
           sock,
@@ -283,6 +274,7 @@ async function handleMessage(sock, msg) {
           "bot_button_base",
         );
         break;
+
       case "confirm_bot_text_base":
         await pemesanan.handleConfirmPayment(
           sock,
@@ -303,6 +295,7 @@ async function handleMessage(sock, msg) {
           "bot_button_qris",
         );
         break;
+
       case "confirm_bot_text_qris":
         await pemesanan.handleConfirmPayment(
           sock,
@@ -323,6 +316,7 @@ async function handleMessage(sock, msg) {
           "bot_button_imggen",
         );
         break;
+
       case "confirm_bot_text_imggen":
         await pemesanan.handleConfirmPayment(
           sock,
@@ -343,6 +337,7 @@ async function handleMessage(sock, msg) {
           "bot_button_all",
         );
         break;
+
       case "confirm_bot_text_all":
         await pemesanan.handleConfirmPayment(
           sock,
@@ -377,7 +372,7 @@ async function handleMessage(sock, msg) {
         break;
 
       // ==========================================
-      // 🔐 ADMIN PANEL
+      // 🔐 ADMIN PANEL — BOT ADMIN
       // ==========================================
       case "admin_add":
         if (!admin.isAdminOrOwner(senderNumber)) {
@@ -410,42 +405,6 @@ async function handleMessage(sock, msg) {
         await admin.sendAdminList(sock, jid);
         break;
 
-      // ==========================================
-      // 👥 GROUP MANAGER
-      // ==========================================
-      case "admin_group":
-      case "group_manager":
-        if (!admin.isAdminOrOwner(senderNumber)) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await admin.handleGroupManager(sock, jid, senderNumber);
-        break;
-
-      case "group_add":
-        if (!admin.isAdminOrOwner(senderNumber)) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await admin.handleGroupAdd(sock, jid, senderNumber);
-        break;
-
-      case "group_remove":
-        if (!admin.isAdminOrOwner(senderNumber)) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await admin.handleGroupRemove(sock, jid, senderNumber);
-        break;
-
-      case "group_list":
-        if (!admin.isAdminOrOwner(senderNumber)) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await admin.handleGroupList(sock, jid, senderNumber);
-        break;
-
       case "admin_orders":
       case "/listorder":
       case "listorder":
@@ -457,7 +416,7 @@ async function handleMessage(sock, msg) {
         break;
 
       // ==========================================
-      // 🖼️ ADMIN: EDIT BANNER MENU
+      // 🖼️ EDIT BANNER MENU
       // ==========================================
       case "admin_banner":
       case "edit_banner":
@@ -466,6 +425,52 @@ async function handleMessage(sock, msg) {
           break;
         }
         await admin.handleEditBanner(sock, jid, senderNumber);
+        break;
+
+      // ==========================================
+      // 👥 GROUP ADMIN MANAGER
+      // ==========================================
+      case "admin_group":
+      case "group_manager":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupManager(sock, jid, senderNumber);
+        break;
+
+      case "grpadmin_promote":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupSelectForAction(
+          sock,
+          jid,
+          senderNumber,
+          "promote",
+        );
+        break;
+
+      case "grpadmin_demote":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupSelectForAction(
+          sock,
+          jid,
+          senderNumber,
+          "demote",
+        );
+        break;
+
+      case "grpadmin_view":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupSelectForAction(sock, jid, senderNumber, "view");
         break;
 
       // ==========================================
@@ -524,7 +529,7 @@ async function handleMessage(sock, msg) {
         });
         break;
 
-      // ============ BUTTON/LIST RESPONSES ============
+      // ============ BUTTON / LIST RESPONSES ============
       case "btn_info":
         await sock.sendMessage(jid, {
           text: `📌 *INFO BOT*\n\nBot WA + Pakasir QRIS Payment`,
@@ -708,7 +713,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     },
   );
 
-  // Admin section (hanya muncul untuk admin/owner)
+  // Admin section (hanya untuk admin/owner)
   if (admin.isAdminOrOwner(senderNumber)) {
     sections.push(admin.getAdminMenuSection(senderNumber));
   }
@@ -756,7 +761,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
   };
 
   // ==========================================
-  // CEK BANNER
+  // CEK BANNER — KIRIM IMAGE + LIST
   // ==========================================
   const bannerExists = fs.existsSync(BANNER_PATH);
 
@@ -773,7 +778,6 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
       console.log(`🖼️ Menu dikirim dengan banner (${senderNumber})`);
       return;
     } catch (err) {
-      // Banner ada tapi gagal dibaca/dikirim — fallback ke text
       console.error(`⚠️ Gagal kirim banner, fallback ke text: ${err.message}`);
     }
   } else {
@@ -781,7 +785,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
   }
 
   // ==========================================
-  // FALLBACK: Text saja (tanpa banner)
+  // FALLBACK: Text saja
   // ==========================================
   await sock.sendMessage(jid, {
     text: caption,
