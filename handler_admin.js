@@ -1,6 +1,6 @@
 // ==========================================
 //  HANDLER_ADMIN.JS
-//  Admin / Owner Panel + Edit Banner Menu
+//  Admin / Owner Panel + Edit Banner + Group Manager
 // ==========================================
 
 const fs = require("fs");
@@ -11,14 +11,16 @@ const config = require("./config");
 // PATHS
 // ==========================================
 const ADMIN_DB_PATH = path.join(__dirname, "database", "admin.json");
+const GROUP_DB_PATH = path.join(__dirname, "database", "groups.json");
 const BANNER_PATH = path.join(__dirname, "images", "menu", "banner_menu.jpg");
 const BANNER_DIR = path.join(__dirname, "images", "menu");
 
 // ==========================================
-// STATE: Mode edit banner
-// Key: senderNumber → { waiting, jid, timestamp }
+// STATE MAPS
 // ==========================================
 const bannerEditState = new Map();
+// groupActionState: senderNumber → { action: "add"|"remove", jid, timestamp }
+const groupActionState = new Map();
 
 // ==========================================
 // ADMIN DATABASE FUNCTIONS
@@ -41,6 +43,56 @@ function saveAdmins(admins) {
   const dir = path.dirname(ADMIN_DB_PATH);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(ADMIN_DB_PATH, JSON.stringify(admins, null, 2));
+}
+
+// ==========================================
+// GROUP DATABASE FUNCTIONS
+// groups.json → array of { jid, name, addedAt, addedBy }
+// ==========================================
+function loadGroups() {
+  try {
+    const dir = path.dirname(GROUP_DB_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(GROUP_DB_PATH)) {
+      fs.writeFileSync(GROUP_DB_PATH, "[]");
+      return [];
+    }
+    return JSON.parse(fs.readFileSync(GROUP_DB_PATH, "utf-8"));
+  } catch {
+    return [];
+  }
+}
+
+function saveGroups(groups) {
+  const dir = path.dirname(GROUP_DB_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(GROUP_DB_PATH, JSON.stringify(groups, null, 2));
+}
+
+function isGroupRegistered(groupJid) {
+  return loadGroups().some((g) => g.jid === groupJid);
+}
+
+function addGroup(groupJid, groupName, addedBy) {
+  const groups = loadGroups();
+  if (groups.some((g) => g.jid === groupJid)) return false;
+  groups.push({
+    jid: groupJid,
+    name: groupName,
+    addedAt: new Date().toISOString(),
+    addedBy,
+  });
+  saveGroups(groups);
+  return true;
+}
+
+function removeGroup(groupJid) {
+  const groups = loadGroups();
+  const idx = groups.findIndex((g) => g.jid === groupJid);
+  if (idx === -1) return false;
+  groups.splice(idx, 1);
+  saveGroups(groups);
+  return true;
 }
 
 // ==========================================
@@ -68,13 +120,26 @@ function isAdminOrOwner(number) {
   return isOwner(number) || isAdmin(number);
 }
 
-// ==========================================
-// ENSURE BANNER DIR EXISTS
-// ==========================================
 function ensureBannerDir() {
   if (!fs.existsSync(BANNER_DIR)) {
     fs.mkdirSync(BANNER_DIR, { recursive: true });
-    console.log(`📁 Direktori banner dibuat: ${BANNER_DIR}`);
+  }
+}
+
+// ==========================================
+// FETCH JOINED GROUPS DARI WA
+// ==========================================
+async function getJoinedGroups(sock) {
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    return Object.values(groups).map((g) => ({
+      jid: g.id,
+      name: g.subject || "Unknown Group",
+      participants: g.participants?.length || 0,
+    }));
+  } catch (err) {
+    console.error("❌ Gagal fetch group:", err.message);
+    return [];
   }
 }
 
@@ -106,9 +171,7 @@ async function handleAddAdmin(sock, msg, jid, senderNumber, rawText) {
   }
 
   if (isOwner(target)) {
-    await sock.sendMessage(jid, {
-      text: "👑 Nomor tersebut adalah Owner.",
-    });
+    await sock.sendMessage(jid, { text: "👑 Nomor tersebut adalah Owner." });
     return;
   }
 
@@ -169,20 +232,16 @@ async function handleDelAdminFromList(sock, jid, senderNumber, text) {
 }
 
 // ==========================================
-// EXECUTE DELETE ADMIN (shared logic)
+// EXECUTE DELETE ADMIN
 // ==========================================
 async function executeDeleteAdmin(sock, jid, senderNumber, target) {
   if (isOwner(target)) {
-    await sock.sendMessage(jid, {
-      text: "⛔ Tidak bisa menghapus Owner.",
-    });
+    await sock.sendMessage(jid, { text: "⛔ Tidak bisa menghapus Owner." });
     return;
   }
 
   if (!isAdmin(target)) {
-    await sock.sendMessage(jid, {
-      text: `❌ *${target}* bukan admin.`,
-    });
+    await sock.sendMessage(jid, { text: `❌ *${target}* bukan admin.` });
     return;
   }
 
@@ -270,12 +329,7 @@ async function sendAdminDeleteList(sock, jid) {
         name: "single_select",
         buttonParamsJson: JSON.stringify({
           title: "📋 Pilih Admin",
-          sections: [
-            {
-              title: "🛡️ Daftar Admin",
-              rows,
-            },
-          ],
+          sections: [{ title: "🛡️ Daftar Admin", rows }],
         }),
       },
     ],
@@ -340,19 +394,14 @@ async function handleEditBanner(sock, jid, senderNumber) {
     return;
   }
 
-  // Pastikan direktori ada
   ensureBannerDir();
 
-  // Set state menunggu gambar dari sender ini
   bannerEditState.set(senderNumber, {
     waiting: true,
     jid,
     timestamp: Date.now(),
   });
 
-  // ==========================================
-  // Info banner saat ini
-  // ==========================================
   const bannerExists = fs.existsSync(BANNER_PATH);
   let bannerInfo = "";
 
@@ -368,9 +417,6 @@ async function handleEditBanner(sock, jid, senderNumber) {
     bannerInfo = `⚠️ _Banner belum ada_\n\n`;
   }
 
-  // ==========================================
-  // Kirim instruksi
-  // ==========================================
   await sock.sendMessage(jid, {
     text:
       `╔══════════════════════════╗\n` +
@@ -388,9 +434,6 @@ async function handleEditBanner(sock, jid, senderNumber) {
       `❌ Ketik *batal* untuk membatalkan`,
   });
 
-  // ==========================================
-  // Kirim preview banner lama (jika ada)
-  // ==========================================
   if (bannerExists) {
     try {
       const bannerBuffer = fs.readFileSync(BANNER_PATH);
@@ -405,15 +448,11 @@ async function handleEditBanner(sock, jid, senderNumber) {
     }
   }
 
-  // ==========================================
-  // Auto-cancel setelah 5 menit
-  // ==========================================
   setTimeout(
     () => {
       const state = bannerEditState.get(senderNumber);
       if (state?.waiting) {
         bannerEditState.delete(senderNumber);
-        console.log(`⏰ Mode edit banner timeout untuk ${senderNumber}`);
         sock
           .sendMessage(jid, {
             text:
@@ -428,23 +467,15 @@ async function handleEditBanner(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// 🖼️ HANDLER: PROSES GAMBAR MASUK
-// Dipanggil dari handler.js untuk setiap pesan non-text
+// 🖼️ HANDLER: PROSES GAMBAR MASUK (untuk banner)
 // ==========================================
 async function handleIncomingImage(sock, msg, jid, senderNumber) {
-  // ==========================================
-  // Cek apakah sender sedang dalam mode edit banner
-  // ==========================================
   const state = bannerEditState.get(senderNumber);
   if (!state?.waiting) return;
 
   const m = msg.message;
   if (!m) return;
 
-  // ==========================================
-  // CEK COMMAND BATAL
-  // Bisa dari text biasa atau caption gambar
-  // ==========================================
   const textContent = (
     m.conversation ||
     m.extendedTextMessage?.text ||
@@ -462,12 +493,8 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
     return;
   }
 
-  // ==========================================
-  // CEK APAKAH PESAN BERISI GAMBAR
-  // ==========================================
   const imageMsg = m.imageMessage;
   if (!imageMsg) {
-    // Bukan gambar — beri petunjuk
     await sock.sendMessage(jid, {
       text:
         `⚠️ *Kirim gambar (bukan teks)* untuk mengganti banner.\n\n` +
@@ -476,28 +503,18 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
     return;
   }
 
-  // ==========================================
-  // ADA GAMBAR — PROSES
-  // ==========================================
-  console.log(`🖼️ Menerima gambar banner dari ${senderNumber}, memproses...`);
-
-  // Hapus state — cegah double process
+  console.log(`🖼️ Menerima gambar banner dari ${senderNumber}...`);
   bannerEditState.delete(senderNumber);
 
-  // Notif processing
   await sock.sendMessage(jid, {
     text: `⏳ *Memproses dan menyimpan banner baru...*`,
   });
 
   try {
-    // ==========================================
-    // DOWNLOAD GAMBAR DARI PESAN WA
-    // ==========================================
     const { downloadMediaMessage } = require("atexovi-baileys");
 
     ensureBannerDir();
 
-    // Backup banner lama jika ada
     if (fs.existsSync(BANNER_PATH)) {
       const backupName = `banner_menu_backup_${Date.now()}.jpg`;
       const backupPath = path.join(BANNER_DIR, backupName);
@@ -505,7 +522,6 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
       console.log(`💾 Banner lama di-backup: ${backupName}`);
     }
 
-    // Download buffer dari pesan
     const buffer = await downloadMediaMessage(
       msg,
       "buffer",
@@ -529,37 +545,26 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
       },
     );
 
-    // ==========================================
-    // VALIDASI BUFFER
-    // ==========================================
     if (!buffer || buffer.length === 0) {
       throw new Error("Buffer gambar kosong, coba kirim ulang.");
     }
 
-    // Validasi ukuran max 5 MB
     const maxSize = 5 * 1024 * 1024;
     if (buffer.length > maxSize) {
       throw new Error(
-        `Ukuran gambar terlalu besar: ${(buffer.length / 1024 / 1024).toFixed(1)} MB\n` +
-          `Maksimal 5 MB.`,
+        `Ukuran gambar terlalu besar: ${(buffer.length / 1024 / 1024).toFixed(1)} MB (max 5 MB)`,
       );
     }
 
-    // ==========================================
-    // SIMPAN SEBAGAI banner_menu.jpg
-    // ==========================================
     fs.writeFileSync(BANNER_PATH, buffer);
 
     const sizeKB = (buffer.length / 1024).toFixed(1);
     const sizeMB = (buffer.length / 1024 / 1024).toFixed(2);
 
     console.log(
-      `✅ Banner baru disimpan: ${BANNER_PATH} | ${sizeKB} KB | oleh ${senderNumber}`,
+      `✅ Banner baru disimpan | ${sizeKB} KB | oleh ${senderNumber}`,
     );
 
-    // ==========================================
-    // KIRIM KONFIRMASI + PREVIEW BANNER BARU
-    // ==========================================
     await sock.sendMessage(jid, {
       image: buffer,
       caption:
@@ -572,9 +577,6 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
   } catch (err) {
     console.error(`❌ Gagal simpan banner: ${err.message}`);
 
-    // ==========================================
-    // RESTORE BACKUP jika gagal
-    // ==========================================
     try {
       const backupFiles = fs
         .readdirSync(BANNER_DIR)
@@ -591,7 +593,6 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
       console.error(`⚠️ Gagal restore backup: ${restoreErr.message}`);
     }
 
-    // Kirim pesan error
     await sock.sendMessage(jid, {
       text:
         `❌ *GAGAL MEMPERBARUI BANNER*\n\n` +
@@ -605,9 +606,7 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
     return;
   }
 
-  // ==========================================
-  // BERSIHKAN BACKUP LAMA (simpan max 3)
-  // ==========================================
+  // Bersihkan backup lama (max 3)
   try {
     const backupFiles = fs
       .readdirSync(BANNER_DIR)
@@ -617,13 +616,356 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
 
     if (backupFiles.length > 3) {
       for (let i = 3; i < backupFiles.length; i++) {
-        const oldBackup = path.join(BANNER_DIR, backupFiles[i]);
-        fs.unlinkSync(oldBackup);
+        fs.unlinkSync(path.join(BANNER_DIR, backupFiles[i]));
         console.log(`🗑️ Backup lama dihapus: ${backupFiles[i]}`);
       }
     }
-  } catch (cleanErr) {
-    console.error(`⚠️ Gagal bersihkan backup lama: ${cleanErr.message}`);
+  } catch (e) {}
+}
+
+// ==========================================
+// 👥 GROUP MANAGER — MENU UTAMA
+// Tampilkan ringkasan + pilih aksi via button
+// ==========================================
+async function handleGroupManager(sock, jid, senderNumber) {
+  if (!isAdminOrOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const registeredGroups = loadGroups();
+
+  let groupList = "";
+  if (registeredGroups.length === 0) {
+    groupList = `_Belum ada group terdaftar._\n`;
+  } else {
+    registeredGroups.forEach((g, i) => {
+      const prefix = i === registeredGroups.length - 1 ? "└" : "├";
+      const addedAt = new Date(g.addedAt).toLocaleDateString("id-ID");
+      groupList += `${prefix} 👥 *${g.name}*\n`;
+      groupList += `    ID: \`${g.jid}\`\n`;
+      groupList += `    📅 ${addedAt}\n`;
+    });
+  }
+
+  await sock.sendMessage(jid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  👥 *GROUP MANAGER*      ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `📊 *Group Terdaftar: ${registeredGroups.length}*\n\n` +
+      `${groupList}\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `Pilih aksi di bawah 👇`,
+    footer: `© ${config.botName} | Group Manager`,
+    interactiveButtons: [
+      {
+        name: "cta_reply",
+        buttonParamsJson: JSON.stringify({
+          display_text: "➕ Tambah Group",
+          id: "group_add",
+        }),
+      },
+      {
+        name: "cta_reply",
+        buttonParamsJson: JSON.stringify({
+          display_text: "➖ Hapus Group",
+          id: "group_remove",
+        }),
+      },
+      {
+        name: "cta_reply",
+        buttonParamsJson: JSON.stringify({
+          display_text: "📋 Daftar Group",
+          id: "group_list",
+        }),
+      },
+    ],
+  });
+}
+
+// ==========================================
+// 👥 GROUP MANAGER — TAMBAH GROUP
+// Fetch semua group yg diikuti bot, tampilkan sbg list button
+// ==========================================
+async function handleGroupAdd(sock, jid, senderNumber) {
+  if (!isAdminOrOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  await sock.sendMessage(jid, {
+    text: `⏳ *Mengambil daftar group...*`,
+  });
+
+  const joinedGroups = await getJoinedGroups(sock);
+
+  if (joinedGroups.length === 0) {
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *Tidak ada group ditemukan.*\n\n` +
+        `Pastikan bot sudah bergabung ke group terlebih dahulu.`,
+    });
+    return;
+  }
+
+  // Filter: hanya group yang BELUM terdaftar
+  const registered = loadGroups();
+  const unregistered = joinedGroups.filter(
+    (g) => !registered.some((r) => r.jid === g.jid),
+  );
+
+  if (unregistered.length === 0) {
+    await sock.sendMessage(jid, {
+      text:
+        `✅ *Semua group sudah terdaftar!*\n\n` +
+        `Total: ${registered.length} group\n\n` +
+        `Ketik *group_manager* untuk kembali.`,
+    });
+    return;
+  }
+
+  // ==========================================
+  // Bagi ke chunks maks 10 row per section
+  // (WA list max ~10 item per section)
+  // ==========================================
+  const chunkSize = 10;
+  const sections = [];
+
+  for (let i = 0; i < unregistered.length; i += chunkSize) {
+    const chunk = unregistered.slice(i, i + chunkSize);
+    const sectionNum = Math.floor(i / chunkSize) + 1;
+
+    sections.push({
+      title: `👥 Group (${i + 1}-${Math.min(i + chunkSize, unregistered.length)})`,
+      rows: chunk.map((g) => ({
+        header: `👥 ${g.participants} anggota`,
+        title: g.name.length > 24 ? g.name.substring(0, 24) + "…" : g.name,
+        description: g.jid,
+        id: `groupadd_${g.jid}`,
+      })),
+    });
+  }
+
+  await sock.sendMessage(jid, {
+    text:
+      `➕ *TAMBAH GROUP*\n\n` +
+      `Bot bergabung di *${joinedGroups.length}* group.\n` +
+      `Belum terdaftar: *${unregistered.length}* group.\n\n` +
+      `Pilih group yang ingin didaftarkan 👇`,
+    footer: `Terdaftar: ${registered.length} | Belum: ${unregistered.length}`,
+    interactiveButtons: [
+      {
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+          title: "👥 Pilih Group",
+          sections,
+        }),
+      },
+    ],
+  });
+}
+
+// ==========================================
+// 👥 GROUP MANAGER — HAPUS GROUP
+// Tampilkan group terdaftar via list button untuk dipilih
+// ==========================================
+async function handleGroupRemove(sock, jid, senderNumber) {
+  if (!isAdminOrOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const registeredGroups = loadGroups();
+
+  if (registeredGroups.length === 0) {
+    await sock.sendMessage(jid, {
+      text:
+        `📋 *HAPUS GROUP*\n\n` +
+        `_Belum ada group terdaftar._\n\n` +
+        `Tambah group terlebih dahulu dengan ketik *group_add*`,
+    });
+    return;
+  }
+
+  // ==========================================
+  // Bagi ke chunks maks 10 row per section
+  // ==========================================
+  const chunkSize = 10;
+  const sections = [];
+
+  for (let i = 0; i < registeredGroups.length; i += chunkSize) {
+    const chunk = registeredGroups.slice(i, i + chunkSize);
+
+    sections.push({
+      title: `👥 Group Terdaftar (${i + 1}-${Math.min(i + chunkSize, registeredGroups.length)})`,
+      rows: chunk.map((g, idx) => {
+        const addedAt = new Date(g.addedAt).toLocaleDateString("id-ID");
+        return {
+          header: `🗑️ Hapus`,
+          title: g.name.length > 24 ? g.name.substring(0, 24) + "…" : g.name,
+          description: `Ditambah: ${addedAt} | ${g.jid}`,
+          id: `groupremove_${g.jid}`,
+        };
+      }),
+    });
+  }
+
+  await sock.sendMessage(jid, {
+    text:
+      `➖ *HAPUS GROUP*\n\n` +
+      `Total terdaftar: *${registeredGroups.length}* group.\n\n` +
+      `Pilih group yang ingin dihapus dari daftar 👇`,
+    footer: `⚠️ Group yang dihapus tidak akan menerima notifikasi`,
+    interactiveButtons: [
+      {
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+          title: "🗑️ Pilih Group",
+          sections,
+        }),
+      },
+    ],
+  });
+}
+
+// ==========================================
+// 👥 GROUP MANAGER — DAFTAR GROUP (detail)
+// ==========================================
+async function handleGroupList(sock, jid, senderNumber) {
+  if (!isAdminOrOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const registeredGroups = loadGroups();
+
+  if (registeredGroups.length === 0) {
+    await sock.sendMessage(jid, {
+      text:
+        `📋 *DAFTAR GROUP*\n\n` +
+        `_Belum ada group terdaftar._\n\n` +
+        `Ketik *group_add* untuk menambahkan.`,
+    });
+    return;
+  }
+
+  let text =
+    `╔══════════════════════════╗\n` +
+    `║  📋 *DAFTAR GROUP*       ║\n` +
+    `╚══════════════════════════╝\n\n` +
+    `Total: *${registeredGroups.length}* group terdaftar\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  registeredGroups.forEach((g, i) => {
+    const addedAt = new Date(g.addedAt).toLocaleString("id-ID");
+    text +=
+      `*${i + 1}. ${g.name}*\n` +
+      `   🆔 \`${g.jid}\`\n` +
+      `   📅 ${addedAt}\n` +
+      `   👤 Oleh: ${g.addedBy}\n\n`;
+  });
+
+  text += `_Ketik *group_manager* untuk kembali ke menu_`;
+
+  await sock.sendMessage(jid, { text });
+}
+
+// ==========================================
+// 👥 EXECUTE: TAMBAH GROUP (setelah dipilih dari list)
+// Dipanggil dari handler.js saat ID = "groupadd_xxxx@g.us"
+// ==========================================
+async function executeAddGroup(sock, jid, senderNumber, groupJid) {
+  if (!isAdminOrOwner(senderNumber)) return;
+
+  // Ambil nama group dari WA
+  let groupName = groupJid;
+  try {
+    const meta = await sock.groupMetadata(groupJid);
+    groupName = meta.subject || groupJid;
+  } catch (e) {
+    console.error(`⚠️ Gagal ambil metadata group: ${e.message}`);
+  }
+
+  if (isGroupRegistered(groupJid)) {
+    await sock.sendMessage(jid, {
+      text:
+        `⚠️ *Group sudah terdaftar!*\n\n` +
+        `👥 ${groupName}\n` +
+        `🆔 \`${groupJid}\`\n\n` +
+        `Ketik *group_manager* untuk kembali.`,
+    });
+    return;
+  }
+
+  const success = addGroup(groupJid, groupName, senderNumber);
+
+  if (success) {
+    console.log(
+      `✅ Group ditambahkan: ${groupName} (${groupJid}) oleh ${senderNumber}`,
+    );
+    const total = loadGroups().length;
+
+    await sock.sendMessage(jid, {
+      text:
+        `✅ *GROUP BERHASIL DITAMBAHKAN!*\n\n` +
+        `👥 *Nama:* ${groupName}\n` +
+        `🆔 *ID:* \`${groupJid}\`\n` +
+        `📅 *Waktu:* ${new Date().toLocaleString("id-ID")}\n` +
+        `👤 *Oleh:* ${senderNumber}\n` +
+        `📊 *Total group:* ${total}\n\n` +
+        `_Group ini sekarang terdaftar dan dapat menerima notifikasi._\n\n` +
+        `Ketik *group_manager* untuk kembali.`,
+    });
+  } else {
+    await sock.sendMessage(jid, {
+      text: `❌ Gagal menambahkan group. Coba lagi.`,
+    });
+  }
+}
+
+// ==========================================
+// 👥 EXECUTE: HAPUS GROUP (setelah dipilih dari list)
+// Dipanggil dari handler.js saat ID = "groupremove_xxxx@g.us"
+// ==========================================
+async function executeRemoveGroup(sock, jid, senderNumber, groupJid) {
+  if (!isAdminOrOwner(senderNumber)) return;
+
+  const groups = loadGroups();
+  const group = groups.find((g) => g.jid === groupJid);
+
+  if (!group) {
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *Group tidak ditemukan dalam daftar.*\n\n` +
+        `Ketik *group_manager* untuk kembali.`,
+    });
+    return;
+  }
+
+  const success = removeGroup(groupJid);
+
+  if (success) {
+    console.log(
+      `🗑️ Group dihapus: ${group.name} (${groupJid}) oleh ${senderNumber}`,
+    );
+    const remaining = loadGroups().length;
+
+    await sock.sendMessage(jid, {
+      text:
+        `🗑️ *GROUP BERHASIL DIHAPUS!*\n\n` +
+        `👥 *Nama:* ${group.name}\n` +
+        `🆔 *ID:* \`${groupJid}\`\n` +
+        `📅 *Waktu:* ${new Date().toLocaleString("id-ID")}\n` +
+        `👤 *Oleh:* ${senderNumber}\n` +
+        `📊 *Sisa group:* ${remaining}\n\n` +
+        `_Group ini tidak akan menerima notifikasi lagi._\n\n` +
+        `Ketik *group_manager* untuk kembali.`,
+    });
+  } else {
+    await sock.sendMessage(jid, {
+      text: `❌ Gagal menghapus group. Coba lagi.`,
+    });
   }
 }
 
@@ -632,6 +974,7 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
 // ==========================================
 function getAdminMenuSection(senderNumber) {
   const admins = loadAdmins();
+  const groups = loadGroups();
   const role = isOwner(senderNumber) ? "👑 Owner" : "🛡️ Admin";
   const bannerExists = fs.existsSync(BANNER_PATH);
 
@@ -671,6 +1014,12 @@ function getAdminMenuSection(senderNumber) {
           : "Upload banner menu (belum ada)",
         id: "admin_banner",
       },
+      {
+        header: "👥",
+        title: "Group Manager",
+        description: `Kelola group bot (${groups.length} terdaftar)`,
+        id: "admin_group",
+      },
     ],
   };
 }
@@ -689,12 +1038,28 @@ module.exports = {
   handleEditBanner,
   handleIncomingImage,
 
+  // Group manager handlers
+  handleGroupManager,
+  handleGroupAdd,
+  handleGroupRemove,
+  handleGroupList,
+  executeAddGroup,
+  executeRemoveGroup,
+
   // Send UI
   sendAdminList,
   sendAdminDeleteList,
   getAdminMenuSection,
 
-  // Utilities (dipakai file lain)
+  // Group DB utilities
+  loadGroups,
+  saveGroups,
+  isGroupRegistered,
+  addGroup,
+  removeGroup,
+  getJoinedGroups,
+
+  // Utilities
   loadAdmins,
   saveAdmins,
   isOwner,

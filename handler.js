@@ -113,6 +113,28 @@ async function handleMessage(sock, msg) {
   }
 
   // ==========================================
+  // GROUP: Tambah group dari list (groupadd_xxxx@g.us)
+  // ==========================================
+  if (text.startsWith("groupadd_")) {
+    if (admin.isAdminOrOwner(senderNumber)) {
+      const groupJid = rawText.replace(/^groupadd_/i, "");
+      await admin.executeAddGroup(sock, jid, senderNumber, groupJid);
+    }
+    return;
+  }
+
+  // ==========================================
+  // GROUP: Hapus group dari list (groupremove_xxxx@g.us)
+  // ==========================================
+  if (text.startsWith("groupremove_")) {
+    if (admin.isAdminOrOwner(senderNumber)) {
+      const groupJid = rawText.replace(/^groupremove_/i, "");
+      await admin.executeRemoveGroup(sock, jid, senderNumber, groupJid);
+    }
+    return;
+  }
+
+  // ==========================================
   // ROUTING COMMAND
   // ==========================================
   try {
@@ -386,6 +408,42 @@ async function handleMessage(sock, msg) {
           break;
         }
         await admin.sendAdminList(sock, jid);
+        break;
+
+      // ==========================================
+      // 👥 GROUP MANAGER
+      // ==========================================
+      case "admin_group":
+      case "group_manager":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupManager(sock, jid, senderNumber);
+        break;
+
+      case "group_add":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupAdd(sock, jid, senderNumber);
+        break;
+
+      case "group_remove":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupRemove(sock, jid, senderNumber);
+        break;
+
+      case "group_list":
+        if (!admin.isAdminOrOwner(senderNumber)) {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+          break;
+        }
+        await admin.handleGroupList(sock, jid, senderNumber);
         break;
 
       case "admin_orders":
