@@ -609,7 +609,7 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
       `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
       `Pilih menu di bawah 👇`,
     title: config.botName,
-    footer: `© 2024 ${config.botName} | Pakasir QRIS`,
+    footer: `© 2026 ${config.botName} | Pakasir QRIS`,
     interactiveButtons: [
       {
         name: "single_select",

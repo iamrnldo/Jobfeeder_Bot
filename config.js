@@ -5,7 +5,7 @@
 module.exports = {
   // ============ BOT ============
   ownerNumber: "6287719010818",
-  botName: "Bot WhatsApp",
+  botName: "JobFeeder",
   version: "2.0.0",
 
   // ============ PAKASIR QRIS ============
@@ -15,7 +15,8 @@ module.exports = {
     apiKey: "gIzN3WC5eWOnH7mZ38G7HzUVlIYB8sxs",
     paymentMethod: "qris",
     webhookUrl:
-      process.env.WEBHOOK_URL || "https://your-app.koyeb.app/webhook/pakasir",
+      process.env.WEBHOOK_URL ||
+      "https://genuine-adria-iamrmldo-201524e5.koyeb.app/webhook/pakasir",
     expiredMinutes: 30,
   },
 

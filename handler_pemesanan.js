@@ -75,7 +75,7 @@ async function sendKategoriMenu(sock, jid, sender) {
       `💳 Pembayaran via *QRIS*\n` +
       `🔒 Pemesanan di *private chat*\n\n` +
       `Pilih kategori di bawah 👇`,
-    footer: `© 2024 ${config.botName} | Pakasir QRIS`,
+    footer: `© 2026 ${config.botName} | Pakasir QRIS`,
     buttons: [
       {
         buttonId: "kategori_website",
@@ -140,7 +140,7 @@ async function sendServiceMenu(sock, jid, sender) {
       `💳 Pembayaran via *QRIS*\n` +
       `🔒 Pemesanan di *private chat*\n\n` +
       `Pilih paket di bawah 👇`,
-    footer: `© 2024 ${config.botName} | Pakasir QRIS`,
+    footer: `© 2026 ${config.botName} | Pakasir QRIS`,
     buttons,
     headerType: 1,
   });
@@ -178,7 +178,7 @@ async function sendBotWaMenu(sock, jid, sender) {
       `💳 Pembayaran via *QRIS*\n` +
       `🔒 Pemesanan di *private chat*\n\n` +
       `Pilih paket di bawah 👇`,
-    footer: `© 2024 ${config.botName} | Pakasir QRIS`,
+    footer: `© 2026 ${config.botName} | Pakasir QRIS`,
     buttons: [
       {
         buttonId: "service_bot_button",
