@@ -3,7 +3,6 @@
 //  Menu Utama, Fitur Message, Informasi
 // ==========================================
 
-const fs = require("fs");
 const config = require("./config");
 
 // Import sub-handlers
@@ -68,7 +67,7 @@ async function handleMessage(sock, msg) {
   const botId = sock.user?.id?.replace(/:.*@/, "@") || "";
   const botNumber = botId.split("@")[0];
   const senderNumber = getNumberFromJid(
-    msg.key.participant || msg.key.remoteJid
+    msg.key.participant || msg.key.remoteJid,
   );
 
   let text = extractText(msg);
@@ -78,25 +77,9 @@ async function handleMessage(sock, msg) {
   const isBotMentioned = checkBotMentioned(msg, botNumber);
 
   console.log(
-    `📩 [${isGroupChat(jid) ? "GROUP" : "PRIVATE"}] ${sender} (${senderNumber}): ${text || "[non-text]"}`
+    `📩 [${isGroupChat(jid) ? "GROUP" : "PRIVATE"}] ${sender} (${senderNumber}): ${text || "[non-text]"}`,
   );
 
-  // ==========================================
-  // CEK STATE PENDING FOTO MENU (Admin)
-  // Interc;
-    }
-    // Pesan lain saat masih pending → ingatkan
-    await sock.sendMessage(jid, {
-      text:
-        `📸 Kamu sedang dalam mode *update foto menu*.\n\n` +
-        `Kirim *foto* atau ketik */cancelfoto* untuk batal.`,
-    });
-    return;
-  }
-
-  // ==========================================
-  // JIKA TIDAK ADA TEXT → skip (kecuali foto)
-  // ==========================================
   if (!text) return;
 
   // ==========================================
@@ -158,7 +141,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "testing"
+          "testing",
         );
         break;
 
@@ -168,7 +151,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "landing"
+          "landing",
         );
         break;
 
@@ -178,7 +161,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "custom"
+          "custom",
         );
         break;
 
@@ -188,7 +171,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "premium"
+          "premium",
         );
         break;
 
@@ -199,17 +182,16 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "bot_button"
+          "bot_button",
         );
         break;
-
       case "service_bot_text":
         await pemesanan.sendBotWaDetail(
           sock,
           jid,
           sender,
           senderNumber,
-          "bot_text"
+          "bot_text",
         );
         break;
 
@@ -220,7 +202,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "testing"
+          "testing",
         );
         break;
 
@@ -230,7 +212,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "landing"
+          "landing",
         );
         break;
 
@@ -240,7 +222,7 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "custom"
+          "custom",
         );
         break;
 
@@ -250,91 +232,55 @@ async function handleMessage(sock, msg) {
           jid,
           sender,
           senderNumber,
-          "premium"
+          "premium",
         );
         break;
-
+      
       // Bot WA — Base
       case "confirm_bot_button_base":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_base"
+          sock, jid, sender, senderNumber, "bot_button_base"
         );
         break;
-
       case "confirm_bot_text_base":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_base"
+          sock, jid, sender, senderNumber, "bot_text_base"
         );
         break;
 
       // Bot WA — + QRIS Addon
       case "confirm_bot_button_qris":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_qris"
+          sock, jid, sender, senderNumber, "bot_button_qris"
         );
         break;
-
       case "confirm_bot_text_qris":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_qris"
+          sock, jid, sender, senderNumber, "bot_text_qris"
         );
         break;
 
       // Bot WA — + Image Gen Addon
       case "confirm_bot_button_imggen":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_imggen"
+          sock, jid, sender, senderNumber, "bot_button_imggen"
         );
         break;
-
       case "confirm_bot_text_imggen":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_imggen"
+          sock, jid, sender, senderNumber, "bot_text_imggen"
         );
         break;
 
       // Bot WA — + All Addon
       case "confirm_bot_button_all":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_all"
+          sock, jid, sender, senderNumber, "bot_button_all"
         );
         break;
-
       case "confirm_bot_text_all":
         await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_all"
+          sock, jid, sender, senderNumber, "bot_text_all"
         );
         break;
 
@@ -405,22 +351,6 @@ async function handleMessage(sock, msg) {
         await admin.handleAdminListOrders(sock, jid);
         break;
 
-      // ============ UPDATE FOTO MENU ============
-      case "admin_update_menu_photo":
-      case "/updatemenu":
-      case "updatemenu":
-        if (!admin.isAdminOrOwner(senderNumber)) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await admin.handleUpdateMenuPhoto(sock, jid, senderNumber);
-        break;
-
-      case "/cancelfoto":
-      case "cancelfoto":
-        await admin.handleCancelMenuPhoto(sock, jid, senderNumber);
-        break;
-
       // ==========================================
       // 📨 DEMO FITUR MESSAGE
       // ==========================================
@@ -463,17 +393,16 @@ async function handleMessage(sock, msg) {
         });
         break;
 
-      case "menu_ping": {
+      case "menu_ping":
         const ps = Date.now();
         await sock.sendMessage(jid, {
           text: `🏓 *PONG!*\nSpeed: ${Date.now() - ps}ms\nStatus: Online ✅`,
         });
         break;
-      }
 
       case "menu_creator":
         await sock.sendMessage(jid, {
-          text: `👨‍💻 *CREATOR*\n\nGitHub: [github.com](https://github.com/iamrnldo)`,
+          text: `👨‍💻 *CREATOR*\n\nGitHub: https://github.com/iamrnldo`,
         });
         break;
 
@@ -486,17 +415,16 @@ async function handleMessage(sock, msg) {
 
       case "btn_creator":
         await sock.sendMessage(jid, {
-          text: `👨‍💻 *CREATOR*\n\nGitHub: [github.com](https://github.com/iamrnldo)`,
+          text: `👨‍💻 *CREATOR*\n\nGitHub: https://github.com/iamrnldo`,
         });
         break;
 
-      case "btn_ping": {
+      case "btn_ping":
         const s = Date.now();
         await sock.sendMessage(jid, {
           text: `🏓 Pong! Speed: ${Date.now() - s}ms`,
         });
         break;
-      }
 
       case "list_games":
         await sock.sendMessage(jid, {
@@ -542,14 +470,14 @@ async function handleMessage(sock, msg) {
 }
 
 // ==========================================
-// ⭐ MENU UTAMA — INTERACTIVE LIST + GAMBAR
+// ⭐ MENU UTAMA — INTERACTIVE LIST
 // ==========================================
 async function sendMainMenu(sock, jid, sender, senderNumber) {
   const hasTestingService = config.services.some((s) => s.id === "testing");
-  const menuConfig = admin.loadMenuConfig();
 
   const sections = [];
 
+  // Testing section (jika ada)
   if (hasTestingService) {
     sections.push({
       title: "🧪 Testing Payment",
@@ -653,9 +581,10 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
           id: "menu_ping",
         },
       ],
-    }
+    },
   );
 
+  // Admin section (hanya muncul untuk admin/owner)
   if (admin.isAdminOrOwner(senderNumber)) {
     sections.push(admin.getAdminMenuSection(senderNumber));
   }
@@ -663,82 +592,34 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
   const roleText = admin.isOwner(senderNumber)
     ? "👑 Owner"
     : admin.isAdmin(senderNumber)
-    ? "🛡️ Admin"
-    : "👤 User";
+      ? "🛡️ Admin"
+      : "👤 User";
 
-  const menuText =
-    `╔══════════════════════════╗\n` +
-    `║  🤖 *MENU BOT WA*        ║\n` +
-    `╚══════════════════════════╝\n\n` +
-    `Halo *${sender}*! 👋\n` +
-    `Role: *${roleText}*\n\n` +
-    `🛒 *Jasa Pemesanan Website*\n` +
-    `└ Pilih dari menu untuk lihat paket\n\n` +
-    `💳 Pembayaran via *QRIS*\n` +
-    `🔒 Pemesanan di *private chat*\n\n` +
-    `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
-    `Pilih menu di bawah 👇`;
-
-  const interactiveButtons = [
-    {
-      name: "single_select",
-      buttonParamsJson: JSON.stringify({
-        title: "📋 Buka Menu",
-        sections,
-      }),
-    },
-  ];
-
-  // ==========================================
-  // KIRIM DENGAN GAMBAR
-  // Prioritas: local file → URL → fallback text
-  // ==========================================
-  try {
-    // Prioritas 1: Gambar lokal yang sudah diupload admin
-    if (
-      menuConfig.menuImagePath &&
-      fs.existsSync(menuConfig.menuImagePath)
-    ) {
-      const imageBuffer = fs.readFileSync(menuConfig.menuImagePath);
-      await sock.sendMessage(jid, {
-        image: imageBuffer,
-        caption: menuText,
-        footer: `© 2026 ${config.botName} | Pakasir QRIS`,
-        interactiveButtons,
-      });
-      return;
-    }
-
-    // Prioritas 2: URL gambar dari config
-    if (menuConfig.menuImageUrl) {
-      await sock.sendMessage(jid, {
-        image: { url: menuConfig.menuImageUrl },
-        caption: menuText,
-        footer: `© 2026 ${config.botName} | Pakasir QRIS`,
-        interactiveButtons,
-      });
-      return;
-    }
-
-    // Prioritas 3: Fallback tanpa gambar
-    await sock.sendMessage(jid, {
-      text: menuText,
-      footer: `© 2026 ${config.botName} | Pakasir QRIS`,
-      interactiveButtons,
-    });
-  } catch (err) {
-    console.error("❌ Gagal kirim menu dengan gambar:", err.message);
-    // Fallback aman tanpa gambar
-    try {
-      await sock.sendMessage(jid, {
-        text: menuText,
-        footer: `© 2026 ${config.botName} | Pakasir QRIS`,
-        interactiveButtons,
-      });
-    } catch (e) {
-      console.error("❌ Gagal kirim fallback menu:", e.message);
-    }
-  }
+  await sock.sendMessage(jid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  🤖 *MENU BOT WA*        ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `Halo *${sender}*! 👋\n` +
+      `Role: *${roleText}*\n\n` +
+      `🛒 *Jasa Pemesanan Website*\n` +
+      `└ Pilih dari menu untuk lihat paket\n\n` +
+      `💳 Pembayaran via *QRIS*\n` +
+      `🔒 Pemesanan di *private chat*\n\n` +
+      `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
+      `Pilih menu di bawah 👇`,
+    title: config.botName,
+    footer: `© 2026 ${config.botName} | Pakasir QRIS`,
+    interactiveButtons: [
+      {
+        name: "single_select",
+        buttonParamsJson: JSON.stringify({
+          title: "📋 Buka Menu",
+          sections,
+        }),
+      },
+    ],
+  });
 }
 
 // ==========================================
@@ -839,7 +720,7 @@ async function sendTemplateButton(sock, jid) {
         index: 1,
         urlButton: {
           displayText: "🌐 GitHub",
-          url: "[github.com](https://github.com/atex-ovi/atexovi-baileys)",
+          url: "https://github.com/atex-ovi/atexovi-baileys",
         },
       },
       {
@@ -865,7 +746,7 @@ async function sendTemplateButton(sock, jid) {
 // ==========================================
 async function sendImageWithButton(sock, jid) {
   await sock.sendMessage(jid, {
-    image: { url: "[picsum.photos](https://picsum.photos/500/300)" },
+    image: { url: "https://picsum.photos/500/300" },
     caption: "🖼️ *IMAGE + BUTTON*\n\nContoh pesan gambar dengan button!",
     footer: "© 2024",
     buttons: [
