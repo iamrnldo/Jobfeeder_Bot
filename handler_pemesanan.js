@@ -2,6 +2,7 @@
 //  HANDLER_PEMESANAN.JS
 //  Pemesanan & Pembayaran (Pakasir QRIS)
 //  ✅ Support multi kategori: website & botwa
+//  ✅ Support panel hosting untuk bot WA
 // ==========================================
 
 const config = require("./config");
@@ -36,6 +37,14 @@ function getServicesByCategory(category) {
 
 function getAddonById(id) {
   return config.addons.find((a) => a.id === id) || null;
+}
+
+function getPanelById(id) {
+  return config.panelOptions.find((p) => p.id === id) || null;
+}
+
+function getPanelOptions() {
+  return config.panelOptions;
 }
 
 function formatRupiahShort(amount) {
@@ -139,7 +148,7 @@ async function sendServiceMenu(sock, jid, sender) {
 
 // ==========================================
 // 🤖 MENU JASA BOT WHATSAPP
-// ✅ Button Message
+// ✅ Button Message dengan info panel
 // ==========================================
 async function sendBotWaMenu(sock, jid, sender) {
   await sock.sendMessage(jid, {
@@ -153,16 +162,19 @@ async function sendBotWaMenu(sock, jid, sender) {
       `🤖 *Bot WA Custom Button*\n` +
       `├ Harga: *Rp 500.000*\n` +
       `├ Interactive button (atex-ovi baileys)\n` +
-      `├ ✅ Free panel 1 bulan\n` +
-      `└ Perpanjang Rp 25.000/bulan\n\n` +
+      `└ Source code diberikan\n\n` +
       `💬 *Bot WA Text Command*\n` +
       `├ Harga: *Rp 250.000*\n` +
       `├ Perintah teks sederhana\n` +
-      `├ ✅ Free panel 1 bulan\n` +
-      `└ Perpanjang Rp 25.000/bulan\n\n` +
+      `└ Source code diberikan\n\n` +
       `➕ *Tambahan Fitur:*\n` +
       `├ 💳 Fitur QRIS — Rp 100.000\n` +
       `└ 🎨 Generate Image — Rp 50.000\n\n` +
+      `🖥️ *Panel Hosting (wajib pilih):*\n` +
+      `├ 🆓 Free Panel — Gratis (Washington 260ms)\n` +
+      `├ 🌱 eNano — Rp 30.000/bln (Singapore 60ms)\n` +
+      `├ 🚀 eMicro — Rp 50.000/bln (Singapore 60ms)\n` +
+      `└ ⚡ eMedium — Rp 200.000/bln (Singapore 60ms)\n\n` +
       `💳 Pembayaran via *QRIS*\n` +
       `🔒 Pemesanan di *private chat*\n\n` +
       `Pilih paket di bawah 👇`,
@@ -289,8 +301,9 @@ async function sendServiceDetailPrivate(
 }
 
 // ==========================================
-// 🤖 DETAIL BOT WA — PRIVATE
+// 🤖 DETAIL BOT WA — REDIRECT
 // ✅ Menampilkan opsi addon (QRIS, Image Gen)
+// ✅ Menampilkan opsi panel hosting (wajib)
 // ==========================================
 async function sendBotWaDetail(sock, jid, sender, senderNumber, serviceId) {
   const service = getServiceById(serviceId);
@@ -326,6 +339,9 @@ async function sendBotWaDetail(sock, jid, sender, senderNumber, serviceId) {
 
 // ==========================================
 // 🤖 DETAIL BOT WA — PRIVATE (inti)
+// ✅ Interactive list dengan kombinasi:
+//    - Paket dasar + panel
+//    - Paket + addon + panel
 // ==========================================
 async function sendBotWaDetailPrivate(
   sock,
@@ -370,14 +386,86 @@ async function sendBotWaDetailPrivate(
       "\n";
   }
 
-  // Panel info
-  let panelText = "";
-  if (service.panelInfo) {
-    panelText =
-      `\n🖥️ *Info Panel Hosting:*\n` +
-      `├ Free: ${service.panelInfo.freeMonth} bulan pertama\n` +
-      `└ Perpanjang: ${service.panelInfo.monthlyFeeFormatted}\n`;
-  }
+  // Panel options
+  const panelOptions = getPanelOptions();
+  let panelText =
+    `\n🖥️ *Pilih Panel Hosting (Wajib):*\n` +
+    panelOptions
+      .map((p) => {
+        const specs = `${p.specs.cpu}, ${p.specs.ram}, ${p.specs.disk}`;
+        const location = `${p.specs.region} (${p.specs.latency})`;
+        return `${p.emoji} *${p.name}* — ${p.priceFormatted}${p.price > 0 ? "/bln" : ""}\n   └ ${specs}\n   └ ${location}`;
+      })
+      .join("\n\n") +
+    "\n";
+
+  // Build interactive list sections
+  const sections = [];
+
+  // Section 1: Paket Dasar dengan pilihan panel
+  const basePanelRows = panelOptions.map((panel) => ({
+    header: `${service.priceFormatted} + ${panel.priceFormatted}`,
+    title: `${service.emoji} ${service.name} + ${panel.emoji} ${panel.name}`,
+    description: `Bot dasar + Panel ${panel.name} — ${pakasir.formatRupiah(service.price + panel.price)}`,
+    id: `confirm_${serviceId}_base_${panel.id}`,
+  }));
+
+  sections.push({
+    title: `${service.emoji} Paket Dasar`,
+    rows: basePanelRows,
+  });
+
+  // Section 2: Paket + QRIS
+  const qrisPanelRows = panelOptions.map((panel) => ({
+    header: `${service.priceFormatted} + Rp 100k + ${panel.priceFormatted}`,
+    title: `💳 + QRIS + ${panel.emoji} ${panel.name}`,
+    description: `${service.name} + QRIS + ${panel.name} — ${pakasir.formatRupiah(service.price + 100000 + panel.price)}`,
+    id: `confirm_${serviceId}_qris_${panel.id}`,
+  }));
+
+  sections.push({
+    title: "➕ Paket + QRIS",
+    rows: qrisPanelRows,
+  });
+
+  // Section 3: Paket + Image Gen
+  const imggenPanelRows = panelOptions.map((panel) => ({
+    header: `${service.priceFormatted} + Rp 50k + ${panel.priceFormatted}`,
+    title: `🎨 + Image Gen + ${panel.emoji} ${panel.name}`,
+    description: `${service.name} + Image Gen + ${panel.name} — ${pakasir.formatRupiah(service.price + 50000 + panel.price)}`,
+    id: `confirm_${serviceId}_imggen_${panel.id}`,
+  }));
+
+  sections.push({
+    title: "➕ Paket + Generate Image",
+    rows: imggenPanelRows,
+  });
+
+  // Section 4: Paket + All Addons
+  const allAddonPanelRows = panelOptions.map((panel) => ({
+    header: `${service.priceFormatted} + Rp 150k + ${panel.priceFormatted}`,
+    title: `💳🎨 + Semua Addon + ${panel.emoji} ${panel.name}`,
+    description: `${service.name} + QRIS + Image + ${panel.name} — ${pakasir.formatRupiah(service.price + 150000 + panel.price)}`,
+    id: `confirm_${serviceId}_all_${panel.id}`,
+  }));
+
+  sections.push({
+    title: "➕ Paket Lengkap (QRIS + Image Gen)",
+    rows: allAddonPanelRows,
+  });
+
+  // Section 5: Batalkan
+  sections.push({
+    title: "❌ Batalkan",
+    rows: [
+      {
+        header: "Kembali",
+        title: "❌ Batal / Lihat Paket Lain",
+        description: "Kembali ke menu jasa Bot WA",
+        id: "menu_botwa",
+      },
+    ],
+  });
 
   await sock.sendMessage(jid, {
     text:
@@ -392,6 +480,7 @@ async function sendBotWaDetailPrivate(
       panelText +
       `\n💳 *Pembayaran:* QRIS\n` +
       `⏰ *Masa berlaku:* ${config.pakasir.expiredMinutes} menit\n\n` +
+      `⚠️ *WAJIB pilih panel hosting untuk bot bisa jalan!*\n\n` +
       `Pilih paket di bawah 👇`,
     title: service.name,
     footer: `© 2024 ${config.botName}`,
@@ -399,54 +488,8 @@ async function sendBotWaDetailPrivate(
       {
         name: "single_select",
         buttonParamsJson: JSON.stringify({
-          title: "📋 Pilih Paket",
-          sections: [
-            {
-              title: `${service.emoji} Paket Dasar`,
-              rows: [
-                {
-                  header: service.priceFormatted,
-                  title: `${service.emoji} ${service.name} (Tanpa Addon)`,
-                  description: `Hanya bot dasar — ${service.priceFormatted}`,
-                  id: `confirm_${serviceId}_base`,
-                },
-              ],
-            },
-            {
-              title: "➕ Paket + Addon",
-              rows: [
-                {
-                  header: `${service.priceFormatted} + Rp 100.000`,
-                  title: "💳 + Fitur Pembayaran QRIS",
-                  description: `${service.name} + QRIS — ${pakasir.formatRupiah(service.price + 100000)}`,
-                  id: `confirm_${serviceId}_qris`,
-                },
-                {
-                  header: `${service.priceFormatted} + Rp 50.000`,
-                  title: "🎨 + Fitur Generate Image",
-                  description: `${service.name} + Image Gen — ${pakasir.formatRupiah(service.price + 50000)}`,
-                  id: `confirm_${serviceId}_imggen`,
-                },
-                {
-                  header: `${service.priceFormatted} + Rp 150.000`,
-                  title: "💳🎨 + QRIS & Generate Image",
-                  description: `${service.name} + Semua Addon — ${pakasir.formatRupiah(service.price + 150000)}`,
-                  id: `confirm_${serviceId}_all`,
-                },
-              ],
-            },
-            {
-              title: "❌ Batalkan",
-              rows: [
-                {
-                  header: "Kembali",
-                  title: "❌ Batal / Lihat Paket Lain",
-                  description: "Kembali ke menu jasa Bot WA",
-                  id: "menu_botwa",
-                },
-              ],
-            },
-          ],
+          title: "📋 Pilih Paket + Panel",
+          sections,
         }),
       },
     ],
@@ -454,87 +497,54 @@ async function sendBotWaDetailPrivate(
 }
 
 // ==========================================
-// 💳 KONFIRMASI PEMBAYARAN
-// ✅ Support serviceId dengan suffix addon
-//    Format: confirm_{serviceId}_{addonType}
-//    Contoh: confirm_bot_button_base
-//            confirm_bot_button_qris
-//            confirm_bot_button_all
-// ==========================================
-async function handleConfirmPayment(
-  sock,
-  jid,
-  sender,
-  senderNumber,
-  fullServiceId,
-) {
-  // Parse serviceId dan addonType
-  // fullServiceId contoh: "bot_button_qris" atau "landing"
-  const { serviceId, addonType, finalPrice, addonLabel } =
-    parseServiceId(fullServiceId);
-
-  const service = getServiceById(serviceId);
-  if (!service) {
-    await sock.sendMessage(jid, { text: "❌ Layanan tidak ditemukan." });
-    return;
-  }
-
-  // Redirect dari group ke private
-  if (isGroupChat(jid)) {
-    const privateJid = numberToJid(senderNumber);
-
-    await sock.sendMessage(jid, {
-      text:
-        `🔒 Proses pembayaran dilakukan di *private chat*.\n` +
-        `Cek chat pribadi kamu! 👇`,
-    });
-
-    await processPayment(
-      sock,
-      privateJid,
-      sender,
-      senderNumber,
-      serviceId,
-      addonType,
-      finalPrice,
-      addonLabel,
-    );
-    return;
-  }
-
-  await processPayment(
-    sock,
-    jid,
-    sender,
-    senderNumber,
-    serviceId,
-    addonType,
-    finalPrice,
-    addonLabel,
-  );
-}
-
-// ==========================================
-// HELPER: Parse service ID + addon type
+// HELPER: Parse service ID + addon type + panel
+// Format: serviceId_addonType_panelId
+// Contoh: bot_button_qris_enano
 // ==========================================
 function parseServiceId(fullServiceId) {
-  // Cek apakah ada suffix addon
-  const addonSuffixes = ["_base", "_qris", "_imggen", "_all"];
+  const parts = fullServiceId.split("_");
 
-  let serviceId = fullServiceId;
-  let addonType = "base";
+  // Deteksi panel ID (selalu di akhir jika ada)
+  const panelIds = config.panelOptions.map((p) => p.id);
+  let panelId = null;
+  let panelPrice = 0;
+  let panelLabel = "";
 
-  for (const suffix of addonSuffixes) {
-    if (fullServiceId.endsWith(suffix)) {
-      serviceId = fullServiceId.slice(0, -suffix.length);
-      addonType = suffix.replace("_", "");
-      break;
+  const lastPart = parts[parts.length - 1];
+  if (panelIds.includes(lastPart)) {
+    panelId = lastPart;
+    parts.pop(); // remove panel from parts
+
+    const panel = getPanelById(panelId);
+    if (panel) {
+      panelPrice = panel.price;
+      panelLabel = ` + ${panel.emoji} ${panel.name}`;
     }
   }
 
+  // Deteksi addon type
+  const addonSuffixes = ["base", "qris", "imggen", "all"];
+  let addonType = "base";
+
+  const secondLastPart = parts[parts.length - 1];
+  if (addonSuffixes.includes(secondLastPart)) {
+    addonType = secondLastPart;
+    parts.pop(); // remove addon from parts
+  }
+
+  // Sisa adalah serviceId
+  const serviceId = parts.join("_");
+
   const service = getServiceById(serviceId);
   if (!service) {
-    return { serviceId, addonType, finalPrice: 0, addonLabel: "" };
+    return {
+      serviceId,
+      addonType,
+      panelId,
+      finalPrice: 0,
+      addonLabel: "",
+      panelLabel: "",
+    };
   }
 
   let addonPrice = 0;
@@ -561,13 +571,76 @@ function parseServiceId(fullServiceId) {
   return {
     serviceId,
     addonType,
-    finalPrice: service.price + addonPrice,
+    panelId,
+    finalPrice: service.price + addonPrice + panelPrice,
     addonLabel,
+    panelLabel,
   };
 }
 
 // ==========================================
+// 💳 KONFIRMASI PEMBAYARAN
+// ✅ Support serviceId dengan suffix addon + panel
+// ==========================================
+async function handleConfirmPayment(
+  sock,
+  jid,
+  sender,
+  senderNumber,
+  fullServiceId,
+) {
+  // Parse serviceId, addonType, dan panelId
+  const { serviceId, addonType, panelId, finalPrice, addonLabel, panelLabel } =
+    parseServiceId(fullServiceId);
+
+  const service = getServiceById(serviceId);
+  if (!service) {
+    await sock.sendMessage(jid, { text: "❌ Layanan tidak ditemukan." });
+    return;
+  }
+
+  // Redirect dari group ke private
+  if (isGroupChat(jid)) {
+    const privateJid = numberToJid(senderNumber);
+
+    await sock.sendMessage(jid, {
+      text:
+        `🔒 Proses pembayaran dilakukan di *private chat*.\n` +
+        `Cek chat pribadi kamu! 👇`,
+    });
+
+    await processPayment(
+      sock,
+      privateJid,
+      sender,
+      senderNumber,
+      serviceId,
+      addonType,
+      panelId,
+      finalPrice,
+      addonLabel,
+      panelLabel,
+    );
+    return;
+  }
+
+  await processPayment(
+    sock,
+    jid,
+    sender,
+    senderNumber,
+    serviceId,
+    addonType,
+    panelId,
+    finalPrice,
+    addonLabel,
+    panelLabel,
+  );
+}
+
+// ==========================================
 // 💳 PROSES PEMBAYARAN — SELALU PRIVATE
+// ✅ Support panel hosting
 // ==========================================
 async function processPayment(
   sock,
@@ -576,14 +649,18 @@ async function processPayment(
   senderNumber,
   serviceId,
   addonType = "base",
+  panelId = null,
   finalPrice = null,
   addonLabel = "",
+  panelLabel = "",
 ) {
   const service = getServiceById(serviceId);
   if (!service) return;
 
   const price = finalPrice || service.price;
-  const serviceName = service.name + addonLabel;
+  const serviceName = service.name + addonLabel + panelLabel;
+
+  const panel = panelId ? getPanelById(panelId) : null;
 
   // Cek pending order
   const existingOrder = pakasir.getPendingOrderByBuyer(senderNumber);
@@ -599,13 +676,18 @@ async function processPayment(
   }
 
   // Loading
-  await sock.sendMessage(jid, {
-    text:
-      `⏳ *Membuat pembayaran QRIS...*\n\n` +
-      `💼 ${serviceName}\n` +
-      `💰 ${pakasir.formatRupiah(price)}\n\n` +
-      `Mohon tunggu...`,
-  });
+  let loadingText =
+    `⏳ *Membuat pembayaran QRIS...*\n\n` +
+    `💼 ${serviceName}\n` +
+    `💰 ${pakasir.formatRupiah(price)}\n`;
+
+  if (panel) {
+    loadingText += `🖥️ Panel: ${panel.name} (${panel.priceFormatted}${panel.price > 0 ? "/bln" : ""})\n`;
+  }
+
+  loadingText += `\nMohon tunggu...`;
+
+  await sock.sendMessage(jid, { text: loadingText });
 
   // Buat order
   const order = pakasir.createOrder({
@@ -638,32 +720,51 @@ async function processPayment(
       const qrBuffer = await pakasir.generateQRImage(payment.payment_number);
 
       if (qrBuffer) {
+        let caption =
+          `╔══════════════════════════╗\n` +
+          `║  💳 *PEMBAYARAN QRIS*     ║\n` +
+          `╚══════════════════════════╝\n\n` +
+          `📦 *Order ID:* ${order.orderId}\n` +
+          `💼 *Jasa:* ${service.name}\n` +
+          `💰 *Harga:* ${service.priceFormatted}\n`;
+
+        if (addonLabel) {
+          caption += `➕ *Addon:* ${addonLabel.replace(" + ", "")}\n`;
+        }
+
+        if (panel && panel.price > 0) {
+          caption +=
+            `🖥️ *Panel:* ${panel.name}\n` +
+            `   └ ${panel.specs.cpu}, ${panel.specs.ram}, ${panel.specs.disk}\n` +
+            `   └ ${panel.specs.region} (${panel.specs.latency})\n` +
+            `   └ ${panel.priceFormatted}/bulan\n`;
+        } else if (panel) {
+          caption +=
+            `🖥️ *Panel:* ${panel.name} (Gratis)\n` +
+            `   └ ${panel.specs.cpu}, ${panel.specs.ram}, ${panel.specs.disk}\n` +
+            `   └ ${panel.specs.region} (${panel.specs.latency})\n`;
+        }
+
+        if (fee > 0) {
+          caption += `💸 *Biaya admin:* ${pakasir.formatRupiah(fee)}\n`;
+        }
+
+        caption +=
+          `💵 *Total bayar:* *${pakasir.formatRupiah(totalPayment)}*\n` +
+          `👤 *Pemesan:* ${sender}\n\n` +
+          `📱 *Cara Bayar:*\n` +
+          `1. Buka e-wallet / m-banking\n` +
+          `2. Pilih Scan QR / QRIS\n` +
+          `3. Scan QR code di atas\n` +
+          `4. Bayar sebesar *${pakasir.formatRupiah(totalPayment)}*\n\n` +
+          `⏰ *Berlaku sampai:*\n` +
+          `${pakasir.formatDate(payment.expired_at)}\n\n` +
+          `📋 Ketik */cek* setelah bayar\n` +
+          `🚫 Tekan tombol di bawah untuk batalkan`;
+
         const sentMsg = await sock.sendMessage(jid, {
           image: qrBuffer,
-          caption:
-            `╔══════════════════════════╗\n` +
-            `║  💳 *PEMBAYARAN QRIS*     ║\n` +
-            `╚══════════════════════════╝\n\n` +
-            `📦 *Order ID:* ${order.orderId}\n` +
-            `💼 *Jasa:* ${serviceName}\n` +
-            `💰 *Harga:* ${service.priceFormatted}\n` +
-            (addonLabel
-              ? `➕ *Addon:* ${addonLabel.replace(" + ", "")}\n`
-              : ``) +
-            (fee > 0
-              ? `💸 *Biaya admin:* ${pakasir.formatRupiah(fee)}\n`
-              : ``) +
-            `💵 *Total bayar:* *${pakasir.formatRupiah(totalPayment)}*\n` +
-            `👤 *Pemesan:* ${sender}\n\n` +
-            `📱 *Cara Bayar:*\n` +
-            `1. Buka e-wallet / m-banking\n` +
-            `2. Pilih Scan QR / QRIS\n` +
-            `3. Scan QR code di atas\n` +
-            `4. Bayar sebesar *${pakasir.formatRupiah(totalPayment)}*\n\n` +
-            `⏰ *Berlaku sampai:*\n` +
-            `${pakasir.formatDate(payment.expired_at)}\n\n` +
-            `📋 Ketik */cek* setelah bayar\n` +
-            `🚫 Tekan tombol di bawah untuk batalkan`,
+          caption,
           interactiveButtons: [
             {
               name: "quick_reply",
@@ -751,6 +852,7 @@ async function processPayment(
         priceFormatted: pakasir.formatRupiah(price),
       },
       result.payment,
+      panel,
     );
 
     console.log(`✅ Payment created: ${order.orderId} | ${senderNumber}`);
@@ -1071,6 +1173,7 @@ async function handleOrderHistory(sock, jid, senderNumber) {
 
 // ==========================================
 // 🔔 NOTIF OWNER: PESANAN BARU
+// ✅ Support info panel hosting
 // ==========================================
 async function notifyOwnerNewOrder(
   sock,
@@ -1079,24 +1182,38 @@ async function notifyOwnerNewOrder(
   buyerNumber,
   service,
   payment,
+  panel = null,
 ) {
   try {
-    await sock.sendMessage(numberToJid(config.ownerNumber), {
-      text:
-        `╔══════════════════════════╗\n` +
-        `║  🆕 *PESANAN BARU!*       ║\n` +
-        `╚══════════════════════════╝\n\n` +
-        `📦 Order: *${order.orderId}*\n` +
-        `💼 Jasa: *${service.name}*\n` +
-        `💰 Harga: *${service.priceFormatted}*\n` +
-        (payment?.fee ? `💸 Fee: ${pakasir.formatRupiah(payment.fee)}\n` : ``) +
-        `💵 Total: *${pakasir.formatRupiah(payment?.total_payment || service.price)}*\n\n` +
-        `👤 *Pemesan:*\n` +
-        `├ Nama: ${buyerName}\n` +
-        `└ HP: ${buyerNumber}\n\n` +
-        `⏳ Status: Menunggu Pembayaran\n` +
-        `⏰ Expired: ${pakasir.formatDate(payment?.expired_at || order.expiredAt)}`,
-    });
+    let text =
+      `╔══════════════════════════╗\n` +
+      `║  🆕 *PESANAN BARU!*       ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `📦 Order: *${order.orderId}*\n` +
+      `💼 Jasa: *${service.name}*\n` +
+      `💰 Harga: *${service.priceFormatted}*\n`;
+
+    if (panel) {
+      text +=
+        `🖥️ Panel: *${panel.name}*\n` +
+        `   └ ${panel.specs.cpu}, ${panel.specs.ram}, ${panel.specs.disk}\n` +
+        `   └ ${panel.specs.region} (${panel.specs.latency})\n` +
+        `   └ ${panel.priceFormatted}${panel.price > 0 ? "/bulan" : ""}\n`;
+    }
+
+    if (payment?.fee) {
+      text += `💸 Fee: ${pakasir.formatRupiah(payment.fee)}\n`;
+    }
+
+    text +=
+      `💵 Total: *${pakasir.formatRupiah(payment?.total_payment || service.price)}*\n\n` +
+      `👤 *Pemesan:*\n` +
+      `├ Nama: ${buyerName}\n` +
+      `└ HP: ${buyerNumber}\n\n` +
+      `⏳ Status: Menunggu Pembayaran\n` +
+      `⏰ Expired: ${pakasir.formatDate(payment?.expired_at || order.expiredAt)}`;
+
+    await sock.sendMessage(numberToJid(config.ownerNumber), { text });
   } catch (err) {
     console.error("❌ Gagal notif owner (new order):", err.message);
   }
@@ -1262,4 +1379,6 @@ module.exports = {
   // Utils
   numberToJid,
   parseServiceId,
+  getPanelById,
+  getPanelOptions,
 };

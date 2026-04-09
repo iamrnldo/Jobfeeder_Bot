@@ -10,36 +10,85 @@ module.exports = {
 
   // ============ PAKASIR QRIS ============
   pakasir: {
-    // ✅ FIX: Domain yang benar sesuai dokumentasi
     baseUrl: "https://app.pakasir.com",
-
-    // Slug proyek (dari halaman proyek Pakasir)
     project: "jasapembuatanweb",
-
-    // API Key (dari halaman detail proyek Pakasir)
     apiKey: "gIzN3WC5eWOnH7mZ38G7HzUVlIYB8sxs",
-
-    // Metode pembayaran default
-    // Pilihan: qris, bni_va, bri_va, cimb_niaga_va, permata_va, dll
     paymentMethod: "qris",
-
-    // Webhook URL — ganti sesuai domain deploy kamu
-    // Isi juga di halaman Edit Proyek di dashboard Pakasir
     webhookUrl:
       process.env.WEBHOOK_URL || "https://your-app.koyeb.app/webhook/pakasir",
-
-    // Durasi QRIS berlaku (menit) — pakasir punya expired sendiri,
-    // ini untuk tracking internal bot
     expiredMinutes: 30,
   },
 
-  // ============ JASA WEBSITE ============
-  services: [
-  
+  // ==========================================
+  // 🖥️ PANEL HOSTING OPTIONS
+  // ==========================================
+  panelOptions: [
+    {
+      id: "free",
+      name: "Free Panel",
+      price: 0,
+      priceFormatted: "Gratis",
+      specs: {
+        cpu: "0.1 vCPU",
+        ram: "256 MB RAM",
+        disk: "2 GB Disk",
+        region: "Washington",
+        latency: "260ms",
+      },
+      emoji: "🆓",
+      description: "Panel gratis dengan spesifikasi dasar",
+    },
+    {
+      id: "enano",
+      name: "eNano",
+      price: 30000,
+      priceFormatted: "Rp 30.000",
+      specs: {
+        cpu: "0.1 vCPU",
+        ram: "256 MB RAM",
+        disk: "2 GB Disk",
+        region: "Singapore",
+        latency: "60ms",
+      },
+      emoji: "🌱",
+      description: "Panel entry level dengan server Singapore",
+    },
+    {
+      id: "emicro",
+      name: "eMicro",
+      price: 50000,
+      priceFormatted: "Rp 50.000",
+      specs: {
+        cpu: "0.25 vCPU",
+        ram: "512 MB RAM",
+        disk: "4 GB Disk",
+        region: "Singapore",
+        latency: "60ms",
+      },
+      emoji: "🚀",
+      description: "Panel micro dengan performa lebih baik",
+    },
+    {
+      id: "emedium",
+      name: "eMedium",
+      price: 200000,
+      priceFormatted: "Rp 200.000",
+      specs: {
+        cpu: "1 vCPU",
+        ram: "2 GB RAM",
+        disk: "16 GB Disk",
+        region: "Singapore",
+        latency: "60ms",
+      },
+      emoji: "⚡",
+      description: "Panel premium dengan spesifikasi tinggi",
+    },
+  ],
 
-    // ==========================================
-    // 💼 JASA PEMBUATAN WEBSITE
-    // ==========================================
+  // ==========================================
+  // 💼 JASA WEBSITE
+  // ==========================================
+  services: [
     {
       id: "landing",
       category: "website",
@@ -126,8 +175,6 @@ module.exports = {
         "✅ Admin panel (add/del admin)",
         "✅ Custom command sesuai kebutuhan",
         "✅ Source code diberikan",
-        "✅ Free panel hosting 1 bulan",
-        "✅ Bulan berikutnya Rp 25.000/bulan",
         "✅ Support setup & deploy",
         "✅ Pengerjaan 3-5 hari kerja",
       ],
@@ -135,11 +182,7 @@ module.exports = {
         { id: "addon_qris", name: "Fitur Pembayaran QRIS", price: 100000 },
         { id: "addon_imggen", name: "Fitur Generate Image", price: 50000 },
       ],
-      panelInfo: {
-        freeMonth: 1,
-        monthlyFee: 25000,
-        monthlyFeeFormatted: "Rp 25.000/bulan",
-      },
+      requirePanel: true, // Bot butuh panel hosting
     },
     {
       id: "bot_text",
@@ -155,8 +198,6 @@ module.exports = {
         "✅ Auto-reply pesan",
         "✅ Admin panel dasar",
         "✅ Source code diberikan",
-        "✅ Free panel hosting 1 bulan",
-        "✅ Bulan berikutnya Rp 25.000/bulan",
         "✅ Support setup & deploy",
         "✅ Pengerjaan 1-3 hari kerja",
       ],
@@ -164,16 +205,12 @@ module.exports = {
         { id: "addon_qris", name: "Fitur Pembayaran QRIS", price: 100000 },
         { id: "addon_imggen", name: "Fitur Generate Image", price: 50000 },
       ],
-      panelInfo: {
-        freeMonth: 1,
-        monthlyFee: 25000,
-        monthlyFeeFormatted: "Rp 25.000/bulan",
-      },
+      requirePanel: true, // Bot butuh panel hosting
     },
   ],
 
   // ==========================================
-  // ADD-ON FITUR BOT WA (referensi)
+  // ADD-ON FITUR BOT WA
   // ==========================================
   addons: [
     {
