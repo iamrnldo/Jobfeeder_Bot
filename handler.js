@@ -99,6 +99,8 @@ async function handleMessage(sock, msg) {
   // ==========================================
   // PARAMETERIZED COMMANDS
   // ==========================================
+
+  // Bot admin management
   if (text.startsWith("/addadmin ") || text.startsWith("addadmin ")) {
     await admin.handleAddAdmin(sock, msg, jid, senderNumber, rawText);
     return;
@@ -112,14 +114,22 @@ async function handleMessage(sock, msg) {
     return;
   }
 
-  // ==========================================
-  // GROUP ADMIN MANAGER — dynamic routing
-  // grpselect_  grppromote_  grpdemote_
-  // ==========================================
+  // Group admin command (/promote /demote) — hanya di group
+  if (text.startsWith("/promote") || text.startsWith("promote ")) {
+    await admin.handlePromoteCommand(sock, msg, jid, senderNumber);
+    return;
+  }
+  if (text.startsWith("/demote") || text.startsWith("demote ")) {
+    await admin.handleDemoteCommand(sock, msg, jid, senderNumber);
+    return;
+  }
+
+  // Group admin manager — dynamic routing dari list button
   if (
     text.startsWith("grpselect_") ||
     text.startsWith("grppromote_") ||
-    text.startsWith("grpdemote_")
+    text.startsWith("grpdemote_") ||
+    text.startsWith("grpnotadmin_")
   ) {
     await admin.handleGroupAdminRouter(sock, msg, jid, senderNumber, rawText);
     return;
@@ -142,7 +152,7 @@ async function handleMessage(sock, msg) {
         break;
 
       // ==========================================
-      // 💼 JASA PEMESANAN WEBSITE
+      // 💼 JASA PEMESANAN
       // ==========================================
       case "jasa":
       case "/jasa":
@@ -601,12 +611,9 @@ async function handleMessage(sock, msg) {
 async function sendMainMenu(sock, jid, sender, senderNumber) {
   const hasTestingService = config.services.some((s) => s.id === "testing");
 
-  // ==========================================
-  // BUILD SECTIONS
-  // ==========================================
   const sections = [];
 
-  // Testing section (jika ada di config)
+  // Testing section
   if (hasTestingService) {
     sections.push({
       title: "🧪 Testing Payment",
@@ -713,23 +720,17 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     },
   );
 
-  // Admin section (hanya untuk admin/owner)
+  // Admin section
   if (admin.isAdminOrOwner(senderNumber)) {
     sections.push(admin.getAdminMenuSection(senderNumber));
   }
 
-  // ==========================================
-  // ROLE TEXT
-  // ==========================================
   const roleText = admin.isOwner(senderNumber)
     ? "👑 Owner"
     : admin.isAdmin(senderNumber)
       ? "🛡️ Admin"
       : "👤 User";
 
-  // ==========================================
-  // CAPTION
-  // ==========================================
   const caption =
     `╔══════════════════════════╗\n` +
     `║  🤖 *MENU BOT WA*        ║\n` +
@@ -743,9 +744,6 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
     `Pilih menu di bawah 👇`;
 
-  // ==========================================
-  // INTERACTIVE BUTTON PAYLOAD
-  // ==========================================
   const interactivePayload = {
     title: config.botName,
     footer: `© 2026 ${config.botName} | Pakasir QRIS`,
@@ -760,33 +758,27 @@ async function sendMainMenu(sock, jid, sender, senderNumber) {
     ],
   };
 
-  // ==========================================
-  // CEK BANNER — KIRIM IMAGE + LIST
-  // ==========================================
+  // Cek banner
   const bannerExists = fs.existsSync(BANNER_PATH);
 
   if (bannerExists) {
     try {
       const bannerBuffer = fs.readFileSync(BANNER_PATH);
-
       await sock.sendMessage(jid, {
         image: bannerBuffer,
         caption,
         ...interactivePayload,
       });
-
       console.log(`🖼️ Menu dikirim dengan banner (${senderNumber})`);
       return;
     } catch (err) {
-      console.error(`⚠️ Gagal kirim banner, fallback ke text: ${err.message}`);
+      console.error(`⚠️ Gagal kirim banner, fallback: ${err.message}`);
     }
   } else {
-    console.log(`📋 Banner tidak ditemukan, kirim menu text (${senderNumber})`);
+    console.log(`📋 Banner tidak ada, kirim text (${senderNumber})`);
   }
 
-  // ==========================================
-  // FALLBACK: Text saja
-  // ==========================================
+  // Fallback text
   await sock.sendMessage(jid, {
     text: caption,
     ...interactivePayload,
