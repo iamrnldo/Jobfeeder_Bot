@@ -334,9 +334,6 @@ async function startBot() {
   activeSock = sock;
   store?.bind(sock.ev);
 
-  // ✅ Pass store ke handler agar bisa resolve LID
-  const { handleMessage } = require("./handler");
-
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -347,9 +344,14 @@ async function startBot() {
       qrcode.generate(qr, { small: true });
     }
 
+    // Di index.js — dalam event connection.update "open"
+    // Tambahkan setelah: botStatus.connected = true;
+
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
+
+      // ✅ Set runtime info dari handler_admin_group
       setBotRuntimeInfo(sock);
 
       console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
@@ -383,8 +385,7 @@ async function startBot() {
     if (type !== "notify") return;
     for (const msg of messages) {
       botStatus.messageCount++;
-      // ✅ Pass store untuk resolve LID
-      await handleMessage(sock, msg, store);
+      await handleMessage(sock, msg);
     }
   });
 
