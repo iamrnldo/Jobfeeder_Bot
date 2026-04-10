@@ -3,6 +3,7 @@
 //  Pemesanan & Pembayaran (Pakasir QRIS)
 //  ✅ Support multi kategori: website & botwa
 //  ✅ Support panel hosting untuk bot WA
+//  ✅ Fixed parseServiceId untuk service ID dengan underscore
 // ==========================================
 
 const config = require("./config");
@@ -58,7 +59,6 @@ function formatRupiahShort(amount) {
 
 // ==========================================
 // 🏠 MENU PILIH KATEGORI JASA
-// ✅ Tampil dulu kategori: Website atau Bot WA
 // ==========================================
 async function sendKategoriMenu(sock, jid, sender) {
   await sock.sendMessage(jid, {
@@ -94,7 +94,6 @@ async function sendKategoriMenu(sock, jid, sender) {
 
 // ==========================================
 // 💼 MENU JASA WEBSITE
-// ✅ Button Message
 // ==========================================
 async function sendServiceMenu(sock, jid, sender) {
   const hasTestingService = config.services.some((s) => s.id === "testing");
@@ -148,7 +147,6 @@ async function sendServiceMenu(sock, jid, sender) {
 
 // ==========================================
 // 🤖 MENU JASA BOT WHATSAPP
-// ✅ Button Message dengan info panel
 // ==========================================
 async function sendBotWaMenu(sock, jid, sender) {
   await sock.sendMessage(jid, {
@@ -197,7 +195,6 @@ async function sendBotWaMenu(sock, jid, sender) {
 
 // ==========================================
 // 💼 DETAIL SERVICE (website)
-// ✅ Jika dari group → redirect ke private
 // ==========================================
 async function sendServiceDetail(sock, jid, sender, senderNumber, serviceId) {
   const service = getServiceById(serviceId);
@@ -302,8 +299,6 @@ async function sendServiceDetailPrivate(
 
 // ==========================================
 // 🤖 DETAIL BOT WA — REDIRECT
-// ✅ Menampilkan opsi addon (QRIS, Image Gen)
-// ✅ Menampilkan opsi panel hosting (wajib)
 // ==========================================
 async function sendBotWaDetail(sock, jid, sender, senderNumber, serviceId) {
   const service = getServiceById(serviceId);
@@ -312,7 +307,6 @@ async function sendBotWaDetail(sock, jid, sender, senderNumber, serviceId) {
     return;
   }
 
-  // Redirect dari group ke private
   if (isGroupChat(jid)) {
     const privateJid = numberToJid(senderNumber);
 
@@ -386,7 +380,7 @@ async function sendBotWaDetailPrivate(
       "\n";
   }
 
-  // Panel options
+  // Panel options text
   const panelOptions = getPanelOptions();
   let panelText =
     `\n🖥️ *Pilih Panel Hosting (Wajib):*\n` +
@@ -394,15 +388,25 @@ async function sendBotWaDetailPrivate(
       .map((p) => {
         const specs = `${p.specs.cpu}, ${p.specs.ram}, ${p.specs.disk}`;
         const location = `${p.specs.region} (${p.specs.latency})`;
-        return `${p.emoji} *${p.name}* — ${p.priceFormatted}${p.price > 0 ? "/bln" : ""}\n   └ ${specs}\n   └ ${location}`;
+        return (
+          `${p.emoji} *${p.name}* — ${p.priceFormatted}` +
+          `${p.price > 0 ? "/bln" : ""}\n` +
+          `   └ ${specs}\n` +
+          `   └ ${location}`
+        );
       })
       .join("\n\n") +
     "\n";
 
+  // ==========================================
   // Build interactive list sections
+  // ID format: confirm_{serviceId}_{addonType}_{panelId}
+  // Contoh: confirm_bot_button_base_free
+  //         confirm_bot_text_qris_enano
+  // ==========================================
   const sections = [];
 
-  // Section 1: Paket Dasar dengan pilihan panel
+  // Section 1: Paket Dasar + pilihan panel
   const basePanelRows = panelOptions.map((panel) => ({
     header: `${service.priceFormatted} + ${panel.priceFormatted}`,
     title: `${service.emoji} ${service.name} + ${panel.emoji} ${panel.name}`,
@@ -497,56 +501,92 @@ async function sendBotWaDetailPrivate(
 }
 
 // ==========================================
-// HELPER: Parse service ID + addon type + panel
-// Format: serviceId_addonType_panelId
-// Contoh: bot_button_qris_enano
+// ✅ FIXED: Parse service ID + addon type + panel
+//
+// Format input: {serviceId}_{addonType}_{panelId}
+//
+// Contoh:
+//   "landing"                   → service=landing, addon=base, panel=null
+//   "landing_base"              → service=landing, addon=base, panel=null  (website confirm)
+//   "bot_button_base_free"      → service=bot_button, addon=base, panel=free
+//   "bot_button_qris_enano"     → service=bot_button, addon=qris, panel=enano
+//   "bot_text_all_emedium"      → service=bot_text, addon=all, panel=emedium
+//   "bot_text_imggen_emicro"    → service=bot_text, addon=imggen, panel=emicro
+//
+// Strategi:
+//   1. Match service ID dari kiri (greedy, terpanjang dulu)
+//   2. Sisa string: parse addon type lalu panel ID
 // ==========================================
 function parseServiceId(fullServiceId) {
-  const parts = fullServiceId.split("_");
-
-  // Deteksi panel ID (selalu di akhir jika ada)
   const panelIds = config.panelOptions.map((p) => p.id);
-  let panelId = null;
-  let panelPrice = 0;
-  let panelLabel = "";
+  const addonSuffixes = ["base", "qris", "imggen", "all"];
+  const knownServiceIds = config.services.map((s) => s.id);
 
-  const lastPart = parts[parts.length - 1];
-  if (panelIds.includes(lastPart)) {
-    panelId = lastPart;
-    parts.pop(); // remove panel from parts
+  // ==========================================
+  // STEP 1: Greedy match service ID dari kiri
+  // Sort by length DESC untuk hindari partial match
+  // Contoh: "bot_button" harus match sebelum "bot"
+  // ==========================================
+  const sortedServiceIds = [...knownServiceIds].sort(
+    (a, b) => b.length - a.length,
+  );
 
-    const panel = getPanelById(panelId);
-    if (panel) {
-      panelPrice = panel.price;
-      panelLabel = ` + ${panel.emoji} ${panel.name}`;
+  let serviceId = null;
+  let remainder = "";
+
+  for (const sid of sortedServiceIds) {
+    if (fullServiceId === sid) {
+      // Exact match — tidak ada addon/panel
+      serviceId = sid;
+      remainder = "";
+      break;
+    }
+    if (fullServiceId.startsWith(sid + "_")) {
+      // Match dengan underscore separator
+      serviceId = sid;
+      remainder = fullServiceId.substring(sid.length + 1); // +1 untuk _
+      break;
     }
   }
 
-  // Deteksi addon type
-  const addonSuffixes = ["base", "qris", "imggen", "all"];
-  let addonType = "base";
-
-  const secondLastPart = parts[parts.length - 1];
-  if (addonSuffixes.includes(secondLastPart)) {
-    addonType = secondLastPart;
-    parts.pop(); // remove addon from parts
-  }
-
-  // Sisa adalah serviceId
-  const serviceId = parts.join("_");
-
-  const service = getServiceById(serviceId);
-  if (!service) {
+  // Fallback jika tidak ketemu
+  if (!serviceId) {
+    console.warn(`⚠️ parseServiceId: unknown service in "${fullServiceId}"`);
     return {
-      serviceId,
-      addonType,
-      panelId,
+      serviceId: fullServiceId,
+      addonType: "base",
+      panelId: null,
       finalPrice: 0,
       addonLabel: "",
       panelLabel: "",
     };
   }
 
+  const service = getServiceById(serviceId);
+
+  // ==========================================
+  // STEP 2: Parse remainder → addonType + panelId
+  // remainder contoh: "base_free", "qris_enano", "all_emedium", ""
+  // ==========================================
+  const remainderParts = remainder ? remainder.split("_") : [];
+
+  let addonType = "base";
+  let panelId = null;
+
+  // Cek part pertama apakah addon type
+  if (remainderParts.length > 0 && addonSuffixes.includes(remainderParts[0])) {
+    addonType = remainderParts[0];
+    remainderParts.shift();
+  }
+
+  // Cek part berikutnya apakah panel ID
+  if (remainderParts.length > 0 && panelIds.includes(remainderParts[0])) {
+    panelId = remainderParts[0];
+  }
+
+  // ==========================================
+  // STEP 3: Hitung harga addon
+  // ==========================================
   let addonPrice = 0;
   let addonLabel = "";
 
@@ -568,11 +608,41 @@ function parseServiceId(fullServiceId) {
       addonLabel = "";
   }
 
+  // ==========================================
+  // STEP 4: Hitung harga panel
+  // ==========================================
+  let panelPrice = 0;
+  let panelLabel = "";
+
+  if (panelId) {
+    const panel = getPanelById(panelId);
+    if (panel) {
+      panelPrice = panel.price;
+      panelLabel = ` + ${panel.emoji} ${panel.name}`;
+    }
+  }
+
+  // ==========================================
+  // STEP 5: Hitung final price
+  // ==========================================
+  const basePrice = service ? service.price : 0;
+  const finalPrice = basePrice + addonPrice + panelPrice;
+
+  console.log(`🔍 parseServiceId("${fullServiceId}") →`, {
+    serviceId,
+    addonType,
+    panelId,
+    basePrice,
+    addonPrice,
+    panelPrice,
+    finalPrice,
+  });
+
   return {
     serviceId,
     addonType,
     panelId,
-    finalPrice: service.price + addonPrice + panelPrice,
+    finalPrice,
     addonLabel,
     panelLabel,
   };
@@ -589,13 +659,20 @@ async function handleConfirmPayment(
   senderNumber,
   fullServiceId,
 ) {
+  console.log(`💳 handleConfirmPayment: fullServiceId="${fullServiceId}"`);
+
   // Parse serviceId, addonType, dan panelId
   const { serviceId, addonType, panelId, finalPrice, addonLabel, panelLabel } =
     parseServiceId(fullServiceId);
 
   const service = getServiceById(serviceId);
   if (!service) {
-    await sock.sendMessage(jid, { text: "❌ Layanan tidak ditemukan." });
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *Layanan tidak ditemukan*\n\n` +
+        `ID: ${fullServiceId}\n` +
+        `Ketik */jasa* untuk lihat layanan tersedia.`,
+    });
     return;
   }
 
@@ -640,7 +717,6 @@ async function handleConfirmPayment(
 
 // ==========================================
 // 💳 PROSES PEMBAYARAN — SELALU PRIVATE
-// ✅ Support panel hosting
 // ==========================================
 async function processPayment(
   sock,
@@ -659,7 +735,6 @@ async function processPayment(
 
   const price = finalPrice || service.price;
   const serviceName = service.name + addonLabel + panelLabel;
-
   const panel = panelId ? getPanelById(panelId) : null;
 
   // Cek pending order
@@ -667,29 +742,39 @@ async function processPayment(
   if (existingOrder) {
     await sock.sendMessage(jid, {
       text:
-        `⚠️ Masih ada pesanan pending:\n\n` +
+        `⚠️ *PESANAN PENDING*\n\n` +
+        `Masih ada pesanan belum dibayar:\n\n` +
         `📦 Order: *${existingOrder.orderId}*\n` +
-        `💼 Jasa: *${existingOrder.serviceName}*\n\n` +
-        `Ketik */cek* untuk cek status.`,
+        `💼 Jasa: *${existingOrder.serviceName}*\n` +
+        `💰 Total: *${pakasir.formatRupiah(existingOrder.totalPayment)}*\n\n` +
+        `Ketik */cek* untuk cek status.\n` +
+        `Ketik */batalkan* untuk batalkan pesanan.`,
     });
     return;
   }
 
-  // Loading
+  // Loading message
   let loadingText =
     `⏳ *Membuat pembayaran QRIS...*\n\n` +
-    `💼 ${serviceName}\n` +
-    `💰 ${pakasir.formatRupiah(price)}\n`;
+    `💼 *Jasa:* ${serviceName}\n` +
+    `💰 *Harga dasar:* ${service.priceFormatted}\n`;
 
-  if (panel) {
-    loadingText += `🖥️ Panel: ${panel.name} (${panel.priceFormatted}${panel.price > 0 ? "/bln" : ""})\n`;
+  if (addonLabel) {
+    loadingText += `➕ *Addon:* ${addonLabel.replace(" + ", "")}\n`;
   }
 
-  loadingText += `\nMohon tunggu...`;
+  if (panel) {
+    loadingText +=
+      `🖥️ *Panel:* ${panel.name}` +
+      `${panel.price > 0 ? ` (${panel.priceFormatted}/bln)` : " (Gratis)"}\n`;
+  }
+
+  loadingText +=
+    `💵 *Total:* ${pakasir.formatRupiah(price)}\n\n` + `Mohon tunggu...`;
 
   await sock.sendMessage(jid, { text: loadingText });
 
-  // Buat order
+  // Buat order di database
   const order = pakasir.createOrder({
     serviceId: service.id,
     serviceName: serviceName,
@@ -715,11 +800,14 @@ async function processPayment(
       expiredAt: payment.expired_at || order.expiredAt,
     });
 
-    // Generate QR
+    // Generate QR Image dari QR string
     if (payment.payment_number && payment.payment_method === "qris") {
       const qrBuffer = await pakasir.generateQRImage(payment.payment_number);
 
       if (qrBuffer) {
+        // ==========================================
+        // Kirim QR sebagai gambar + caption
+        // ==========================================
         let caption =
           `╔══════════════════════════╗\n` +
           `║  💳 *PEMBAYARAN QRIS*     ║\n` +
@@ -780,21 +868,22 @@ async function processPayment(
           pakasir.updateOrder(order.orderId, {
             qrisMessageKey: sentMsg.key,
           });
-          console.log(`💾 QRIS key saved: ${order.orderId}`);
+          console.log(`💾 QRIS message key saved: ${order.orderId}`);
         }
       } else {
-        // Fallback link
+        // Fallback: kirim link pembayaran
         const payUrl = pakasir.getPaymentUrl(order.orderId, price, true);
+
         const sentMsg = await sock.sendMessage(jid, {
           text:
             `💳 *PEMBAYARAN QRIS*\n\n` +
             `📦 Order: *${order.orderId}*\n` +
             `💼 Jasa: *${serviceName}*\n` +
             `💵 Total: *${pakasir.formatRupiah(totalPayment)}*\n\n` +
-            `🔗 *Link Pembayaran:*\n${payUrl}\n\n` +
+            `⚠️ QR gagal di-generate. Gunakan link:\n` +
+            `🔗 ${payUrl}\n\n` +
             `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
-            `📋 Ketik */cek* setelah bayar\n` +
-            `🚫 Tekan tombol di bawah untuk batalkan`,
+            `📋 Ketik */cek* setelah bayar`,
           interactiveButtons: [
             {
               name: "quick_reply",
@@ -811,7 +900,7 @@ async function processPayment(
         }
       }
     } else {
-      // Non-QRIS (VA)
+      // Non-QRIS (VA / metode lain)
       const sentMsg = await sock.sendMessage(jid, {
         text:
           `💳 *PEMBAYARAN*\n\n` +
@@ -821,8 +910,7 @@ async function processPayment(
           `🏦 *Metode:* ${(payment.payment_method || "").toUpperCase()}\n` +
           `🔢 *Nomor VA:* \`${payment.payment_number}\`\n\n` +
           `⏰ Berlaku: ${pakasir.formatDate(payment.expired_at)}\n\n` +
-          `📋 Ketik */cek* setelah bayar\n` +
-          `🚫 Tekan tombol di bawah untuk batalkan`,
+          `📋 Ketik */cek* setelah bayar`,
         interactiveButtons: [
           {
             name: "quick_reply",
@@ -855,9 +943,11 @@ async function processPayment(
       panel,
     );
 
-    console.log(`✅ Payment created: ${order.orderId} | ${senderNumber}`);
+    console.log(
+      `✅ Payment created: ${order.orderId} | ${senderNumber} | ${serviceName}`,
+    );
   } else {
-    // GAGAL
+    // API GAGAL
     pakasir.updateOrder(order.orderId, { status: "failed" });
 
     const errorMsg = result.error || "Unknown error";
@@ -868,8 +958,8 @@ async function processPayment(
         `❌ *GAGAL MEMBUAT QRIS*\n\n` +
         `📦 Order: ${order.orderId}\n` +
         `❗ Error: ${errorMsg}\n\n` +
-        `🔗 *Alternatif:*\n${payUrl}\n\n` +
-        `Ketik */jasa* untuk memesan ulang.`,
+        `🔗 *Coba via link:*\n${payUrl}\n\n` +
+        `Atau ketik */jasa* untuk memesan ulang.`,
       interactiveButtons: [
         {
           name: "quick_reply",
@@ -888,6 +978,7 @@ async function processPayment(
       ],
     });
 
+    // Notif owner tentang error
     try {
       await sock.sendMessage(numberToJid(config.ownerNumber), {
         text:
@@ -929,21 +1020,21 @@ async function handleCancelOrder(sock, jid, senderNumber) {
 
   console.log(`🚫 Cancelling order: ${order.orderId} by ${senderNumber}`);
 
-  // Cancel di Pakasir
+  // Cancel di Pakasir API
   await pakasir.cancelTransaction(order.orderId, order.amount);
 
-  // Update DB
+  // Update status di DB
   pakasir.updateOrder(order.orderId, { status: "cancelled" });
 
-  // Delete pesan QRIS
+  // Delete pesan QRIS dari chat
   if (order.qrisMessageKey) {
     try {
       await sock.sendMessage(order.buyerJid, {
         delete: order.qrisMessageKey,
       });
-      console.log(`🗑️ QRIS deleted on cancel: ${order.orderId}`);
+      console.log(`🗑️ QRIS message deleted: ${order.orderId}`);
     } catch (e) {
-      console.error(`❌ Gagal delete QRIS:`, e.message);
+      console.error(`❌ Gagal delete QRIS message:`, e.message);
     }
     await delay(800);
   }
@@ -1091,7 +1182,7 @@ async function handleCheckPayment(sock, jid, senderNumber) {
     }
   }
 
-  // Masih pending
+  // Masih pending — tampilkan status
   const timeLeft = order.expiredAt
     ? Math.max(0, Math.ceil((new Date(order.expiredAt) - new Date()) / 60000))
     : "?";
@@ -1173,7 +1264,6 @@ async function handleOrderHistory(sock, jid, senderNumber) {
 
 // ==========================================
 // 🔔 NOTIF OWNER: PESANAN BARU
-// ✅ Support info panel hosting
 // ==========================================
 async function notifyOwnerNewOrder(
   sock,
@@ -1227,7 +1317,7 @@ async function notifyPaymentSuccess(sock, order) {
 
   console.log(`\n🎉 PAYMENT SUCCESS: ${order.orderId}`);
 
-  // STEP 1: Delete QRIS
+  // STEP 1: Delete QRIS message
   if (order.qrisMessageKey) {
     try {
       await sock.sendMessage(order.buyerJid, {

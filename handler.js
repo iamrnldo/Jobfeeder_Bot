@@ -64,6 +64,21 @@ function checkBotMentioned(msg, botNumber) {
 }
 
 // ==========================================
+// ✅ CEK DYNAMIC CONFIRM PATTERN
+// Handle: confirm_{serviceId}_{addonType}_{panelId}
+// Contoh:
+//   confirm_landing
+//   confirm_custom
+//   confirm_premium
+//   confirm_bot_button_base_free
+//   confirm_bot_button_qris_enano
+//   confirm_bot_text_all_emedium
+// ==========================================
+function isDynamicConfirm(text) {
+  return text.startsWith("confirm_");
+}
+
+// ==========================================
 // HANDLER UTAMA
 // ==========================================
 async function handleMessage(sock, msg) {
@@ -132,6 +147,26 @@ async function handleMessage(sock, msg) {
     text.startsWith("grpnotadmin_")
   ) {
     await admin.handleGroupAdminRouter(sock, msg, jid, senderNumber, rawText);
+    return;
+  }
+
+  // ==========================================
+  // ✅ DYNAMIC CONFIRM HANDLER
+  // Harus dicek SEBELUM switch-case
+  // Handle semua format confirm_ secara dinamis
+  // sehingga tidak perlu daftarkan satu-satu
+  // ==========================================
+  if (isDynamicConfirm(text)) {
+    const fullServiceId = text.replace("confirm_", "");
+    console.log(`💳 Dynamic confirm triggered: "${fullServiceId}"`);
+
+    await pemesanan.handleConfirmPayment(
+      sock,
+      jid,
+      sender,
+      senderNumber,
+      fullServiceId,
+    );
     return;
   }
 
@@ -230,131 +265,6 @@ async function handleMessage(sock, msg) {
           sender,
           senderNumber,
           "bot_text",
-        );
-        break;
-
-      // ============ KONFIRMASI BAYAR ============
-      case "confirm_testing":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "testing",
-        );
-        break;
-
-      case "confirm_landing":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "landing",
-        );
-        break;
-
-      case "confirm_custom":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "custom",
-        );
-        break;
-
-      case "confirm_premium":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "premium",
-        );
-        break;
-
-      // Bot WA — Base
-      case "confirm_bot_button_base":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_base",
-        );
-        break;
-
-      case "confirm_bot_text_base":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_base",
-        );
-        break;
-
-      // Bot WA — + QRIS Addon
-      case "confirm_bot_button_qris":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_qris",
-        );
-        break;
-
-      case "confirm_bot_text_qris":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_qris",
-        );
-        break;
-
-      // Bot WA — + Image Gen Addon
-      case "confirm_bot_button_imggen":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_imggen",
-        );
-        break;
-
-      case "confirm_bot_text_imggen":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_imggen",
-        );
-        break;
-
-      // Bot WA — + All Addon
-      case "confirm_bot_button_all":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button_all",
-        );
-        break;
-
-      case "confirm_bot_text_all":
-        await pemesanan.handleConfirmPayment(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text_all",
         );
         break;
 
@@ -600,6 +510,19 @@ async function handleMessage(sock, msg) {
     }
   } catch (error) {
     console.error("❗ Error handling message:", error);
+
+    // Debug: kirim error ke owner
+    try {
+      const { numberToJid } = require("./handler_pemesanan");
+      await sock.sendMessage(numberToJid(config.ownerNumber), {
+        text:
+          `⚠️ *ERROR HANDLER*\n\n` +
+          `📩 Text: ${text}\n` +
+          `👤 From: ${senderNumber}\n` +
+          `❗ Error: ${error.message}\n` +
+          `📋 Stack: ${error.stack?.substring(0, 300)}`,
+      });
+    } catch (e) {}
   }
 }
 
