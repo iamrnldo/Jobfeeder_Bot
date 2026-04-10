@@ -1,24 +1,37 @@
 // ==========================================
 //  HANDLER_ADMIN_GROUP.JS
 //  Khusus: Group Admin Manager
-//  - Promote / Demote member group
-//  - Lihat admin group
-//  - Command /promote /demote di group
+//
+//  Definisi "Admin Group":
+//  → Siapa pun yang menjadi admin di group
+//    WhatsApp tempat bot berada.
+//  → TIDAK pakai database file terpisah.
+//  → Dicek real-time dari groupMetadata().
 //
 //  Hak Akses:
-//  Owner + Admin Bot : semua fitur
-//  Tidak bisa demote owner group (superadmin)
+//  ✅ Owner          : semua fitur group manager
+//  ✅ Admin Bot      : semua fitur group manager
+//  ✅ Admin Group WA : promote/demote/lihat
+//                      di group tempat dia admin
+//  ❌ Member biasa   : tidak bisa akses
+//
+//  Batasan:
+//  ❌ Tidak bisa demote owner group (superadmin)
+//  ❌ Admin group hanya bisa akses group
+//     tempat dia menjadi admin
 // ==========================================
 
+const fs = require("fs");
+const path = require("path");
 const config = require("./config");
 const {
-  loadAdmins,
   isOwner,
-  isAdmin,
-  isAdminOrOwner,
+  isAdminBot,
   jidToDigits,
   normalizeNumber,
-} = require("./handler_admin");
+} = require("./handler_owner");
+
+const BANNER_PATH = path.join(__dirname, "images", "menu", "banner_menu.jpg");
 
 // ==========================================
 // BOT LID REGISTRY
@@ -30,7 +43,7 @@ let runtimeBotLid = null;
 
 // ==========================================
 // SET RUNTIME BOT INFO
-// Dipanggil dari index.js saat connect
+// Dipanggil dari index.js saat bot connect
 // ==========================================
 function setBotRuntimeInfo(sock) {
   const userId = sock.user?.id || "";
@@ -92,21 +105,10 @@ function isParticipantBot(participantJid) {
 function findBotInParticipants(participants) {
   if (!participants || participants.length === 0) return null;
 
-  console.log(`\n🔍 findBotInParticipants (${participants.length} total):`);
-
   for (const p of participants) {
-    const pDigits = jidToDigits(p.id);
-    const pDomain = (p.id.split("@")[1] || "").toLowerCase();
-    const isBot = isParticipantBot(p.id);
-
-    console.log(
-      `   [${isBot ? "✅BOT" : "   "}] domain:${pDomain} digits:"${pDigits}" admin:${p.admin || "none"}`,
-    );
-
-    if (isBot) return p;
+    if (isParticipantBot(p.id)) return p;
   }
 
-  console.log(`   ❌ Bot not found`);
   return null;
 }
 
@@ -116,8 +118,6 @@ function findBotInParticipants(participants) {
 async function isBotAdminInGroup(sock, groupJid) {
   try {
     const meta = await sock.groupMetadata(groupJid);
-    console.log(`\n🔍 isBotAdmin - "${meta.subject}"`);
-
     let botP = findBotInParticipants(meta.participants);
 
     if (!botP) {
@@ -127,20 +127,107 @@ async function isBotAdminInGroup(sock, groupJid) {
         if (cached?.participants) {
           botP = findBotInParticipants(cached.participants);
         }
-      } catch (e) {
-        console.error(`   Cache fallback error: ${e.message}`);
-      }
+      } catch (e) {}
     }
 
     if (!botP) return false;
-
-    const isAdm = botP.admin === "admin" || botP.admin === "superadmin";
-    console.log(`   ✅ Bot admin: ${isAdm} (${botP.admin || "none"})`);
-    return isAdm;
+    return botP.admin === "admin" || botP.admin === "superadmin";
   } catch (err) {
     console.error(`❌ isBotAdminInGroup error: ${err.message}`);
     return false;
   }
+}
+
+// ==========================================
+// ✅ CEK: APAKAH SENDER ADMIN DI GROUP INI?
+// Real-time dari metadata group WA
+// ==========================================
+async function isSenderAdminInGroup(sock, groupJid, senderNumber) {
+  try {
+    const meta = await sock.groupMetadata(groupJid);
+    const senderDigits = normalizeNumber(senderNumber);
+
+    const participant = meta.participants.find((p) => {
+      const pDigits = jidToDigits(p.id);
+      // Cocokkan dengan suffix 8 digit (toleran kode negara)
+      return (
+        pDigits === senderDigits ||
+        (pDigits.length >= 8 &&
+          senderDigits.length >= 8 &&
+          pDigits.slice(-8) === senderDigits.slice(-8))
+      );
+    });
+
+    if (!participant) return false;
+    return participant.admin === "admin" || participant.admin === "superadmin";
+  } catch (err) {
+    console.error(`❌ isSenderAdminInGroup error: ${err.message}`);
+    return false;
+  }
+}
+
+// ==========================================
+// ✅ CEK: APAKAH SENDER ADMIN DI SALAH SATU GROUP BOT?
+// Digunakan untuk akses group_manager dari private chat
+// ==========================================
+async function isSenderAdminInAnyGroup(sock, senderNumber) {
+  try {
+    const groups = await sock.groupFetchAllParticipating();
+    const groupList = Object.values(groups);
+    const senderDigits = normalizeNumber(senderNumber);
+
+    for (const g of groupList) {
+      let participants = g.participants || [];
+
+      // Coba ambil fresh metadata
+      try {
+        const fresh = await sock.groupMetadata(g.id);
+        participants = fresh.participants || participants;
+      } catch (e) {}
+
+      const participant = participants.find((p) => {
+        const pDigits = jidToDigits(p.id);
+        return (
+          pDigits === senderDigits ||
+          (pDigits.length >= 8 &&
+            senderDigits.length >= 8 &&
+            pDigits.slice(-8) === senderDigits.slice(-8))
+        );
+      });
+
+      if (
+        participant &&
+        (participant.admin === "admin" || participant.admin === "superadmin")
+      ) {
+        console.log(
+          `✅ Sender +${senderNumber} adalah admin di group "${g.subject}"`,
+        );
+        return true;
+      }
+    }
+
+    return false;
+  } catch (err) {
+    console.error(`❌ isSenderAdminInAnyGroup error: ${err.message}`);
+    return false;
+  }
+}
+
+// ==========================================
+// ✅ CEK AKSES GROUP MANAGER
+//
+// Bisa akses jika:
+// 1. Owner bot
+// 2. Admin bot (terdaftar di database)
+// 3. Admin WA di salah satu group tempat bot berada
+// ==========================================
+async function canAccessGroupManager(sock, senderNumber) {
+  if (isOwner(senderNumber)) return true;
+  if (isAdminBot(senderNumber)) return true;
+
+  // Cek real-time dari group WA
+  const isGroupAdmin = await isSenderAdminInAnyGroup(sock, senderNumber);
+  return isGroupAdmin;
 }
 
 // ==========================================
@@ -179,8 +266,39 @@ async function getJoinedGroups(sock) {
 }
 
 // ==========================================
+// ✅ GET JOINED GROUPS YANG SENDER JADI ADMIN
+// Untuk admin group WA — hanya tampilkan
+// group tempat dia menjadi admin
+// ==========================================
+async function getJoinedGroupsForSender(sock, senderNumber) {
+  const allGroups = await getJoinedGroups(sock);
+
+  // Owner dan admin bot bisa lihat semua group
+  if (isOwner(senderNumber) || isAdminBot(senderNumber)) {
+    return allGroups;
+  }
+
+  // Admin group WA — filter hanya group tempat dia admin
+  const senderDigits = normalizeNumber(senderNumber);
+  return allGroups.filter((g) => {
+    const participant = g.participants.find((p) => {
+      const pDigits = jidToDigits(p.id);
+      return (
+        pDigits === senderDigits ||
+        (pDigits.length >= 8 &&
+          senderDigits.length >= 8 &&
+          pDigits.slice(-8) === senderDigits.slice(-8))
+      );
+    });
+    return (
+      participant &&
+      (participant.admin === "admin" || participant.admin === "superadmin")
+    );
+  });
+}
+
+// ==========================================
 // HELPER: DISPLAY NAME
-// Prioritas: nama → nomor (TIDAK pernah JID/LID)
 // ==========================================
 function getDisplayName(participant) {
   if (!participant) return "Unknown";
@@ -195,54 +313,94 @@ function getDisplayName(participant) {
 }
 
 // ==========================================
-// DEBUG LOG
+// ADMIN GROUP PANEL MENU SECTION
 // ==========================================
-function logAccess(fn, senderNumber, granted) {
-  console.log(
-    `🔐 [${fn}] sender="${senderNumber}" ` +
-      `isOwner=${isOwner(senderNumber)} ` +
-      `isAdmin=${isAdmin(senderNumber)} ` +
-      `→ ${granted ? "GRANTED" : "DENIED"}`,
-  );
+function getAdminGroupMenuSection() {
+  const bannerExists = fs.existsSync(BANNER_PATH);
+
+  return {
+    title: "👥 Panel Admin Group",
+    highlight_label: "Admin Group",
+    rows: [
+      {
+        header: "⬆️",
+        title: "Promote Member → Admin",
+        description: "Jadikan member menjadi admin group",
+        id: "grpadmin_promote",
+      },
+      {
+        header: "⬇️",
+        title: "Demote Admin → Member",
+        description: "Turunkan admin group menjadi member",
+        id: "grpadmin_demote",
+      },
+      {
+        header: "👁️",
+        title: "Lihat Admin Group",
+        description: "Tampilkan daftar admin di group",
+        id: "grpadmin_view",
+      },
+      {
+        header: "🖼️",
+        title: "Edit Banner Menu",
+        description: bannerExists
+          ? "Ganti banner (sudah ada)"
+          : "Upload banner (belum ada)",
+        id: "grpadmin_banner",
+      },
+    ],
+  };
 }
 
 // ==========================================
 // GROUP MANAGER — MENU UTAMA
-// Owner + Admin bot bisa akses
 // ==========================================
 async function handleGroupManager(sock, jid, senderNumber) {
-  logAccess("handleGroupManager", senderNumber, isAdminOrOwner(senderNumber));
+  const hasAccess = await canAccessGroupManager(sock, senderNumber);
 
-  if (!isAdminOrOwner(senderNumber)) {
+  if (!hasAccess) {
     await sock.sendMessage(jid, {
       text:
         `⛔ *AKSES DITOLAK*\n\n` +
-        `Fitur ini hanya untuk Owner dan Admin bot.\n\n` +
-        `Nomor kamu: +${senderNumber}`,
+        `Fitur ini hanya untuk:\n` +
+        `├ 👑 Owner bot\n` +
+        `├ 🛡️ Admin bot\n` +
+        `└ 👥 Admin di group WhatsApp\n\n` +
+        `Pastikan kamu menjadi admin\n` +
+        `di salah satu group bot.`,
     });
     return;
   }
 
   await sock.sendMessage(jid, { text: `⏳ *Mengambil data group...*` });
 
-  const joinedGroups = await getJoinedGroups(sock);
+  // Ambil group sesuai hak akses sender
+  const joinedGroups = await getJoinedGroupsForSender(sock, senderNumber);
   const adminCount = joinedGroups.filter((g) => g.botIsAdmin).length;
   const nonAdminCount = joinedGroups.filter((g) => !g.botIsAdmin).length;
+
+  // Label role
+  const roleLabel = isOwner(senderNumber)
+    ? "👑 Owner"
+    : isAdminBot(senderNumber)
+      ? "🛡️ Admin Bot"
+      : "👥 Admin Group";
 
   await sock.sendMessage(jid, {
     text:
       `╔══════════════════════════╗\n` +
       `║  👥 *GROUP ADMIN MANAGER*║\n` +
       `╚══════════════════════════╝\n\n` +
-      `📊 *Status Bot:*\n` +
-      `├ 👥 Total group: ${joinedGroups.length}\n` +
+      `🔑 *Role kamu:* ${roleLabel}\n\n` +
+      `📊 *Group yang bisa dikelola:*\n` +
+      `├ 👥 Total: ${joinedGroups.length} group\n` +
       `├ ✅ Bot admin: ${adminCount} group\n` +
-      `└ ⚠️ Bukan admin: ${nonAdminCount} group\n\n` +
+      `└ ⚠️ Bot bukan admin: ${nonAdminCount} group\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
       `📋 *Pilih aksi:*\n` +
-      `├ ⬆️ *Promote* → jadikan member jadi admin\n` +
-      `├ ⬇️ *Demote* → turunkan admin jadi member\n` +
-      `└ 👁️ *Lihat* → cek daftar admin group\n\n` +
+      `├ ⬆️ *Promote* → member jadi admin\n` +
+      `├ ⬇️ *Demote* → admin jadi member\n` +
+      `└ 👁️ *Lihat* → daftar admin group\n\n` +
       `⚠️ _Bot harus admin group untuk promote/demote_`,
     footer: `© ${config.botName} | Group Manager`,
     interactiveButtons: [
@@ -285,13 +443,9 @@ async function handleGroupManager(sock, jid, senderNumber) {
 // PILIH GROUP UNTUK AKSI
 // ==========================================
 async function handleGroupSelectForAction(sock, jid, senderNumber, action) {
-  logAccess(
-    "handleGroupSelectForAction",
-    senderNumber,
-    isAdminOrOwner(senderNumber),
-  );
+  const hasAccess = await canAccessGroupManager(sock, senderNumber);
 
-  if (!isAdminOrOwner(senderNumber)) {
+  if (!hasAccess) {
     await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
     return;
   }
@@ -304,11 +458,16 @@ async function handleGroupSelectForAction(sock, jid, senderNumber, action) {
 
   await sock.sendMessage(jid, { text: `⏳ *Mengambil daftar group...*` });
 
-  const joinedGroups = await getJoinedGroups(sock);
+  // Ambil group sesuai hak akses sender
+  const joinedGroups = await getJoinedGroupsForSender(sock, senderNumber);
 
   if (joinedGroups.length === 0) {
     await sock.sendMessage(jid, {
-      text: `❌ *Tidak ada group.*\n\nKetik *group_manager* untuk kembali.`,
+      text:
+        `❌ *Tidak ada group yang bisa dikelola.*\n\n` +
+        `Pastikan kamu menjadi admin\n` +
+        `di salah satu group bot.\n\n` +
+        `Ketik *group_manager* untuk kembali.`,
     });
     return;
   }
@@ -368,7 +527,7 @@ async function handleGroupSelectForAction(sock, jid, senderNumber, action) {
   await sock.sendMessage(jid, {
     text:
       `👥 *${actionLabel[action]}*\n\n` +
-      `Total group: *${joinedGroups.length}*\n` +
+      `Group yang bisa dikelola: *${joinedGroups.length}*\n` +
       `├ ✅ Bot admin: *${adminGroupRows.length}*\n` +
       `└ ⚠️ Bukan admin: *${nonAdminGroupRows.length}*\n\n` +
       `Pilih group 👇`,
@@ -389,8 +548,6 @@ async function handleGroupSelectForAction(sock, jid, senderNumber, action) {
 // PERINGATAN BOT BUKAN ADMIN
 // ==========================================
 async function handleBotNotAdmin(sock, jid, senderNumber, groupJid) {
-  if (!isAdminOrOwner(senderNumber)) return;
-
   let groupName = "Group";
   try {
     const meta = await sock.groupMetadata(groupJid);
@@ -411,6 +568,31 @@ async function handleBotNotAdmin(sock, jid, senderNumber, groupJid) {
 }
 
 // ==========================================
+// ✅ VALIDASI: SENDER BOLEH AKSI DI GROUP INI?
+// Cek apakah sender adalah admin di group tsb
+// atau owner/admin bot
+// ==========================================
+async function validateGroupAccess(sock, jid, senderNumber, groupJid) {
+  // Owner dan admin bot selalu boleh
+  if (isOwner(senderNumber) || isAdminBot(senderNumber)) return true;
+
+  // Admin group WA — hanya boleh di group tempat dia admin
+  const isAdminHere = await isSenderAdminInGroup(sock, groupJid, senderNumber);
+  if (!isAdminHere) {
+    await sock.sendMessage(jid, {
+      text:
+        `⛔ *AKSES DITOLAK*\n\n` +
+        `Kamu bukan admin di group ini.\n\n` +
+        `Kamu hanya bisa mengelola group\n` +
+        `tempat kamu menjadi admin.`,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+// ==========================================
 // PROMOTE: PILIH MEMBER
 // ==========================================
 async function handleGroupSelectedForPromote(
@@ -419,7 +601,8 @@ async function handleGroupSelectedForPromote(
   senderNumber,
   groupJid,
 ) {
-  if (!isAdminOrOwner(senderNumber)) return;
+  const valid = await validateGroupAccess(sock, jid, senderNumber, groupJid);
+  if (!valid) return;
 
   await sock.sendMessage(jid, { text: `⏳ *Mengambil data member...*` });
 
@@ -478,7 +661,7 @@ async function handleGroupSelectedForPromote(
       `👥 *Group:* ${groupName}\n` +
       `👤 *Member:* ${members.length} orang\n` +
       `🛡️ *Admin:* ${adminCount} orang\n\n` +
-      `Atau command di group: \`/promote @user\`\n\n` +
+      `Command: \`/promote @user\`\n\n` +
       `Pilih member 👇`,
     footer: `✅ Bot sudah admin`,
     interactiveButtons: [
@@ -495,9 +678,11 @@ async function handleGroupSelectedForPromote(
 
 // ==========================================
 // DEMOTE: PILIH ADMIN
+// Tidak bisa demote owner group (superadmin)
 // ==========================================
 async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
-  if (!isAdminOrOwner(senderNumber)) return;
+  const valid = await validateGroupAccess(sock, jid, senderNumber, groupJid);
+  if (!valid) return;
 
   await sock.sendMessage(jid, { text: `⏳ *Mengambil data admin...*` });
 
@@ -515,7 +700,7 @@ async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
     return;
   }
 
-  // Filter: hanya admin biasa (bukan superadmin/owner, bukan bot)
+  // Hanya admin biasa — skip superadmin (owner group) & bot
   const admins = meta.participants.filter((p) => {
     if (p.admin !== "admin") return false;
     if (isParticipantBot(p.id)) return false;
@@ -559,7 +744,7 @@ async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
       `👥 *Group:* ${groupName}\n` +
       `🛡️ *Admin:* ${admins.length} orang\n` +
       `👑 *Owner:* ${superAdmins.length} orang _(tidak bisa di-demote)_\n\n` +
-      `Atau command di group: \`/demote @user\`\n\n` +
+      `Command: \`/demote @user\`\n\n` +
       `Pilih admin 👇`,
     footer: `⚠️ Owner group tidak bisa di-demote`,
     interactiveButtons: [
@@ -578,7 +763,8 @@ async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
 // VIEW: INFO ADMIN GROUP
 // ==========================================
 async function handleGroupViewAdmins(sock, jid, senderNumber, groupJid) {
-  if (!isAdminOrOwner(senderNumber)) return;
+  const valid = await validateGroupAccess(sock, jid, senderNumber, groupJid);
+  if (!valid) return;
 
   await sock.sendMessage(jid, { text: `⏳ *Mengambil daftar admin...*` });
 
@@ -598,7 +784,6 @@ async function handleGroupViewAdmins(sock, jid, senderNumber, groupJid) {
     (p) => p.admin !== "admin" && p.admin !== "superadmin",
   );
 
-  // Kumpulkan JID untuk mentions (internal Baileys)
   const allAdminJids = [
     ...superAdmins.map((p) => p.id),
     ...admins.map((p) => p.id),
@@ -658,7 +843,8 @@ async function executeGroupPromote(
   groupJid,
   targetJid,
 ) {
-  if (!isAdminOrOwner(senderNumber)) return;
+  const valid = await validateGroupAccess(sock, jid, senderNumber, groupJid);
+  if (!valid) return;
 
   const targetNumber = jidToDigits(targetJid);
   await sock.sendMessage(jid, { text: `⏳ *Mempromote...*` });
@@ -673,7 +859,9 @@ async function executeGroupPromote(
     const meta = await sock.groupMetadata(groupJid).catch(() => null);
     const groupName = meta?.subject || "Group";
 
-    console.log(`⬆️ Promote OK: ${displayName} @ ${groupName}`);
+    console.log(
+      `⬆️ Promote OK: ${displayName} @ ${groupName} oleh +${senderNumber}`,
+    );
 
     await sock.sendMessage(jid, {
       text:
@@ -689,8 +877,7 @@ async function executeGroupPromote(
     console.error(`❌ Promote failed: ${err.message}`);
     let errMsg = err.message;
     if (errMsg.includes("not-authorized")) errMsg = "Bot bukan admin group.";
-    if (errMsg.includes("not-participant"))
-      errMsg = "User bukan anggota group.";
+    if (errMsg.includes("not-participant")) errMsg = "User bukan anggota.";
 
     await sock.sendMessage(jid, {
       text: `❌ *GAGAL PROMOTE*\n\n👤 @${targetNumber}\nError: ${errMsg}`,
@@ -701,7 +888,7 @@ async function executeGroupPromote(
 
 // ==========================================
 // EXECUTE DEMOTE
-// Tidak bisa demote superadmin/owner group
+// Tidak bisa demote owner group (superadmin)
 // ==========================================
 async function executeGroupDemote(
   sock,
@@ -710,7 +897,8 @@ async function executeGroupDemote(
   groupJid,
   targetJid,
 ) {
-  if (!isAdminOrOwner(senderNumber)) return;
+  const valid = await validateGroupAccess(sock, jid, senderNumber, groupJid);
+  if (!valid) return;
 
   const targetNumber = jidToDigits(targetJid);
   await sock.sendMessage(jid, { text: `⏳ *Mendemote...*` });
@@ -737,7 +925,9 @@ async function executeGroupDemote(
     const meta = await sock.groupMetadata(groupJid).catch(() => null);
     const groupName = meta?.subject || "Group";
 
-    console.log(`⬇️ Demote OK: ${displayName} @ ${groupName}`);
+    console.log(
+      `⬇️ Demote OK: ${displayName} @ ${groupName} oleh +${senderNumber}`,
+    );
 
     await sock.sendMessage(jid, {
       text:
@@ -753,7 +943,7 @@ async function executeGroupDemote(
     console.error(`❌ Demote failed: ${err.message}`);
     let errMsg = err.message;
     if (errMsg.includes("not-authorized")) errMsg = "Bot bukan admin group.";
-    if (errMsg.includes("not-participant")) errMsg = "Bukan anggota group.";
+    if (errMsg.includes("not-participant")) errMsg = "Bukan anggota.";
 
     await sock.sendMessage(jid, {
       text: `❌ *GAGAL DEMOTE*\n\n👤 @${targetNumber}\nError: ${errMsg}`,
@@ -763,7 +953,9 @@ async function executeGroupDemote(
 }
 
 // ==========================================
-// COMMAND /promote @user (di group)
+// COMMAND /promote @user (di dalam group)
+// Hanya bisa dari dalam group
+// Sender harus admin di group itu
 // ==========================================
 async function handlePromoteCommand(sock, msg, jid, senderNumber) {
   if (!jid.endsWith("@g.us")) {
@@ -773,15 +965,23 @@ async function handlePromoteCommand(sock, msg, jid, senderNumber) {
     return;
   }
 
-  if (!isAdminOrOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+  // Cek: owner/admin bot OR admin di group ini
+  const isAllowed =
+    isOwner(senderNumber) ||
+    isAdminBot(senderNumber) ||
+    (await isSenderAdminInGroup(sock, jid, senderNumber));
+
+  if (!isAllowed) {
+    await sock.sendMessage(jid, {
+      text: `⛔ *AKSES DITOLAK*\n\nHanya admin group yang bisa promote.`,
+    });
     return;
   }
 
   const botIsAdmin = await isBotAdminInGroup(sock, jid);
   if (!botIsAdmin) {
     await sock.sendMessage(jid, {
-      text: `⚠️ *Bot bukan admin group ini.*`,
+      text: `⚠️ *Bot bukan admin group ini.*\n\nJadikan bot admin terlebih dahulu.`,
     });
     return;
   }
@@ -807,7 +1007,7 @@ async function handlePromoteCommand(sock, msg, jid, senderNumber) {
     try {
       await sock.groupParticipantsUpdate(jid, [targetJid], "promote");
       results.push(`✅ @${number} (${displayName}) → 🛡️ Admin`);
-      console.log(`⬆️ Promote cmd: ${displayName} oleh ${senderNumber}`);
+      console.log(`⬆️ Promote cmd: ${displayName} oleh +${senderNumber}`);
     } catch (err) {
       let e = "Gagal";
       if (err.message?.includes("not-authorized")) e = "Bot bukan admin";
@@ -818,16 +1018,14 @@ async function handlePromoteCommand(sock, msg, jid, senderNumber) {
 
   await sock.sendMessage(
     jid,
-    {
-      text: `⬆️ *HASIL PROMOTE*\n\n${results.join("\n")}`,
-      mentions,
-    },
+    { text: `⬆️ *HASIL PROMOTE*\n\n${results.join("\n")}`, mentions },
     { quoted: msg },
   );
 }
 
 // ==========================================
-// COMMAND /demote @user (di group)
+// COMMAND /demote @user (di dalam group)
+// Tidak bisa demote owner group
 // ==========================================
 async function handleDemoteCommand(sock, msg, jid, senderNumber) {
   if (!jid.endsWith("@g.us")) {
@@ -837,15 +1035,23 @@ async function handleDemoteCommand(sock, msg, jid, senderNumber) {
     return;
   }
 
-  if (!isAdminOrOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+  // Cek: owner/admin bot OR admin di group ini
+  const isAllowed =
+    isOwner(senderNumber) ||
+    isAdminBot(senderNumber) ||
+    (await isSenderAdminInGroup(sock, jid, senderNumber));
+
+  if (!isAllowed) {
+    await sock.sendMessage(jid, {
+      text: `⛔ *AKSES DITOLAK*\n\nHanya admin group yang bisa demote.`,
+    });
     return;
   }
 
   const botIsAdmin = await isBotAdminInGroup(sock, jid);
   if (!botIsAdmin) {
     await sock.sendMessage(jid, {
-      text: `⚠️ *Bot bukan admin group ini.*`,
+      text: `⚠️ *Bot bukan admin group ini.*\n\nJadikan bot admin terlebih dahulu.`,
     });
     return;
   }
@@ -871,7 +1077,7 @@ async function handleDemoteCommand(sock, msg, jid, senderNumber) {
     // Proteksi: tidak bisa demote owner group
     if (participant?.admin === "superadmin") {
       results.push(
-        `⛔ @${number} (${displayName}) → Owner, tidak bisa di-demote`,
+        `⛔ @${number} (${displayName}) → Owner group, tidak bisa di-demote`,
       );
       continue;
     }
@@ -879,7 +1085,7 @@ async function handleDemoteCommand(sock, msg, jid, senderNumber) {
     try {
       await sock.groupParticipantsUpdate(jid, [targetJid], "demote");
       results.push(`✅ @${number} (${displayName}) → 👤 Member`);
-      console.log(`⬇️ Demote cmd: ${displayName} oleh ${senderNumber}`);
+      console.log(`⬇️ Demote cmd: ${displayName} oleh +${senderNumber}`);
     } catch (err) {
       let e = "Gagal";
       if (err.message?.includes("not-authorized")) e = "Bot bukan admin";
@@ -890,10 +1096,7 @@ async function handleDemoteCommand(sock, msg, jid, senderNumber) {
 
   await sock.sendMessage(
     jid,
-    {
-      text: `⬇️ *HASIL DEMOTE*\n\n${results.join("\n")}`,
-      mentions,
-    },
+    { text: `⬇️ *HASIL DEMOTE*\n\n${results.join("\n")}`, mentions },
     { quoted: msg },
   );
 }
@@ -902,13 +1105,8 @@ async function handleDemoteCommand(sock, msg, jid, senderNumber) {
 // ROUTER GROUP ADMIN
 // ==========================================
 async function handleGroupAdminRouter(sock, msg, jid, senderNumber, rawId) {
-  logAccess(
-    "handleGroupAdminRouter",
-    senderNumber,
-    isAdminOrOwner(senderNumber),
-  );
-
-  if (!isAdminOrOwner(senderNumber)) return;
+  const hasAccess = await canAccessGroupManager(sock, senderNumber);
+  if (!hasAccess) return;
 
   if (rawId.startsWith("grpnotadmin_")) {
     const groupJid = rawId.replace("grpnotadmin_", "");
@@ -951,18 +1149,33 @@ async function handleGroupAdminRouter(sock, msg, jid, senderNumber, rawId) {
     await executeGroupDemote(sock, jid, senderNumber, groupJid, targetJid);
     return;
   }
+
+  // Banner dari panel admin group
+  if (rawId === "grpadmin_banner") {
+    const { handleEditBanner } = require("./handler_admin");
+    await handleEditBanner(sock, jid, senderNumber);
+    return;
+  }
 }
 
 // ==========================================
 // EXPORT
 // ==========================================
 module.exports = {
-  // Group manager
+  // Panel
+  getAdminGroupMenuSection,
   handleGroupManager,
   handleGroupSelectForAction,
   handleGroupAdminRouter,
+
+  // Commands (dipakai di handler.js)
   handlePromoteCommand,
   handleDemoteCommand,
+
+  // Checks (dipakai di handler.js untuk routing)
+  canAccessGroupManager,
+  isSenderAdminInGroup,
+  isSenderAdminInAnyGroup,
 
   // Bot identity
   setBotRuntimeInfo,
