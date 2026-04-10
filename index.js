@@ -1,7 +1,5 @@
 // ==========================================
-//  INDEX.JS - Backend
-//  Koneksi WA, HTTP Server, Webhook Pakasir
-//  ✅ Webhook sesuai dokumentasi Pakasir
+//  INDEX.JS - Backend Utama
 // ==========================================
 
 const {
@@ -17,15 +15,23 @@ const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 const http = require("http");
 
-// index.js — bagian import (ganti yang lama)
-
 const { handleMessage } = require("./handler");
-const { notifyPaymentSuccess, notifyPaymentFailed } = require("./handler_pemesanan");
+const {
+  notifyPaymentSuccess,
+  notifyPaymentFailed,
+} = require("./handler_pemesanan");
 const config = require("./config");
 const pakasir = require("./pakasir");
-
-// ✅ Import setBotRuntimeInfo dari file baru
 const { setBotRuntimeInfo } = require("./handler_admin_group");
+const {
+  registerLidMapping,
+  processContactsUpsert,
+  processContact,
+  isLidJid,
+  isPhoneJid,
+  jidToDigits,
+  getLidMapSize,
+} = require("./lid_resolver");
 
 // ==========================================
 // KONFIGURASI
@@ -49,26 +55,12 @@ let botStatus = {
 };
 
 // ==========================================
-// HTTP SERVER + WEBHOOK
+// HTTP SERVER + WEBHOOK PAKASIR
 // ==========================================
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = req.url;
   const method = req.method;
 
-  // ==========================================
-  // ✅ WEBHOOK PAKASIR
-  // POST /webhook/pakasir
-  //
-  // Body dari Pakasir:
-  // {
-  //   "amount": 22000,
-  //   "order_id": "ORD-XXXXX",
-  //   "project": "jasapembuatanweb",
-  //   "status": "completed",
-  //   "payment_method": "qris",
-  //   "completed_at": "2024-09-10T08:07:02.819+07:00"
-  // }
-  // ==========================================
   if (url === "/webhook/pakasir" && method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk.toString()));
@@ -92,7 +84,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // GET /webhook/pakasir (test)
   if (url === "/webhook/pakasir" && method === "GET") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
@@ -104,7 +95,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // /ping
   if (url === "/ping" || url === "/") {
     botStatus.lastPing = new Date();
     botStatus.pingCount++;
@@ -116,36 +106,38 @@ const server = http.createServer((req, res) => {
         uptime: getUptime(botStatus.startTime),
         messages: botStatus.messageCount,
         webhooks: botStatus.webhookCount,
+        lidMappings: getLidMapSize(),
       }),
     );
     return;
   }
 
-  // /health
   if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "healthy" }));
     return;
   }
 
-  // /status
   if (url === "/status") {
     const all = pakasir.loadOrders();
     const completed = all.filter((o) => o.status === "completed");
     const revenue = completed.reduce((s, o) => s + o.amount, 0);
 
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(`<!DOCTYPE html><html><head><title>Bot Status</title>
+    res.end(
+      `<!DOCTYPE html><html><head><title>Bot Status</title>
       <meta name="viewport" content="width=device-width,initial-scale=1">
       <meta http-equiv="refresh" content="30">
-      <style>body{font-family:sans-serif;background:#0a0a0a;color:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px}
-      .c{background:#1a1a2e;border-radius:16px;padding:30px;max-width:400px;width:100%;margin:8px}
-      h1{color:#00ff88}h2{color:#00aaff;font-size:18px}
-      .s{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:bold;font-size:14px}
-      .on{background:#00ff8830;color:#00ff88}.off{background:#ff444430;color:#ff4444}
-      .i div{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #333}
-      .l{color:#888}.v{color:#fff;font-weight:500}.r{color:#00ff88;font-weight:bold;font-size:16px}
-      .w{display:flex;flex-wrap:wrap;justify-content:center}</style></head>
+      <style>
+        body{font-family:sans-serif;background:#0a0a0a;color:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px}
+        .c{background:#1a1a2e;border-radius:16px;padding:30px;max-width:400px;width:100%;margin:8px}
+        h1{color:#00ff88}h2{color:#00aaff;font-size:18px}
+        .s{display:inline-block;padding:4px 12px;border-radius:20px;font-weight:bold;font-size:14px}
+        .on{background:#00ff8830;color:#00ff88}.off{background:#ff444430;color:#ff4444}
+        .i div{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #333}
+        .l{color:#888}.v{color:#fff;font-weight:500}.r{color:#00ff88;font-weight:bold;font-size:16px}
+        .w{display:flex;flex-wrap:wrap;justify-content:center}
+      </style></head>
       <body><div class="w">
       <div class="c"><h1>🤖 Bot WA</h1>
       <span class="s ${botStatus.connected ? "on" : "off"}">${botStatus.connected ? "🟢 ONLINE" : "🔴 OFFLINE"}</span>
@@ -153,13 +145,15 @@ const server = http.createServer((req, res) => {
       <div><span class="l">Uptime</span><span class="v">${getUptime(botStatus.startTime)}</span></div>
       <div><span class="l">Messages</span><span class="v">${botStatus.messageCount}</span></div>
       <div><span class="l">Webhooks</span><span class="v">${botStatus.webhookCount}</span></div>
+      <div><span class="l">LID Mappings</span><span class="v">${getLidMapSize()}</span></div>
       </div></div>
       <div class="c"><h2>💳 Payment</h2><div class="i">
       <div><span class="l">Total Orders</span><span class="v">${all.length}</span></div>
       <div><span class="l">✅ Completed</span><span class="v">${completed.length}</span></div>
       <div><span class="l">⏳ Pending</span><span class="v">${all.filter((o) => o.status === "pending").length}</span></div>
       <div><span class="l">💰 Revenue</span><span class="v r">${pakasir.formatRupiah(revenue)}</span></div>
-      </div></div></div></body></html>`);
+      </div></div></div></body></html>`,
+    );
     return;
   }
 
@@ -174,23 +168,13 @@ server.listen(PORT, () => {
 });
 
 // ==========================================
-// ✅ WEBHOOK HANDLER
-// Sesuai dokumentasi Pakasir:
-// {
-//   "amount": 22000,
-//   "order_id": "ORD-XXXXX",         ← ini orderId kita
-//   "project": "jasapembuatanweb",
-//   "status": "completed",           ← status pembayaran
-//   "payment_method": "qris",
-//   "completed_at": "2024-09-10T08:07:02.819+07:00"
-// }
+// WEBHOOK HANDLER
 // ==========================================
 async function handlePakasirWebhook(data) {
   botStatus.webhookCount++;
 
   const orderId = data.order_id;
   const amount = data.amount;
-  const project = data.project;
   const status = (data.status || "").toLowerCase();
   const completedAt = data.completed_at;
   const paymentMethod = data.payment_method;
@@ -199,46 +183,18 @@ async function handlePakasirWebhook(data) {
     `🔔 Webhook: order=${orderId} status=${status} amount=${amount} method=${paymentMethod}`,
   );
 
-  // ==========================================
-  // VALIDASI: pastikan project sesuai
-  // ==========================================
-  if (project && project !== config.pakasir.project) {
-    console.log(
-      `⚠️ Project mismatch: ${project} !== ${config.pakasir.project}`,
-    );
-    // Tetap proses, mungkin ada perbedaan konfigurasi
-  }
-
-  // Cari order di database
   const order = pakasir.findOrderByOrderId(orderId);
-
   if (!order) {
     console.log(`⚠️ Order tidak ditemukan: ${orderId}`);
     return;
   }
 
-  // ==========================================
-  // VALIDASI: pastikan amount sesuai
-  // (saran dari dokumentasi Pakasir)
-  // ==========================================
-  if (amount && order.amount !== amount) {
-    console.log(
-      `⚠️ Amount mismatch: webhook=${amount} vs order=${order.amount}`,
-    );
-    // Bisa jadi total_payment (termasuk fee) — tetap proses
-  }
-
-  // ==========================================
-  // PROSES STATUS
-  // ==========================================
   if (status === "completed") {
-    // Sudah pernah di-mark completed?
     if (order.status === "completed") {
-      console.log(`⚠️ Order ${orderId} sudah completed sebelumnya, skip.`);
+      console.log(`⚠️ Order ${orderId} sudah completed, skip.`);
       return;
     }
 
-    // Update order
     pakasir.updateOrder(orderId, {
       status: "completed",
       completedAt: completedAt || new Date().toISOString(),
@@ -247,18 +203,13 @@ async function handlePakasirWebhook(data) {
 
     console.log(`✅ Order ${orderId} COMPLETED!`);
 
-    // Kirim notifikasi
     if (activeSock?.user) {
       const updated = pakasir.findOrderById(orderId);
       await notifyPaymentSuccess(activeSock, updated);
     } else {
-      console.error("❌ Socket tidak aktif, notif tertunda");
+      console.error("❌ Socket tidak aktif");
     }
-  } else if (
-    status === "expired" ||
-    status === "failed" ||
-    status === "cancelled"
-  ) {
+  } else if (["expired", "failed", "cancelled"].includes(status)) {
     pakasir.updateOrder(orderId, { status });
     console.log(`${status.toUpperCase()}: ${orderId}`);
 
@@ -267,12 +218,12 @@ async function handlePakasirWebhook(data) {
       await notifyPaymentFailed(activeSock, updated, status);
     }
   } else {
-    console.log(`ℹ️ Status "${status}" tidak diproses untuk ${orderId}`);
+    console.log(`ℹ️ Status "${status}" tidak diproses`);
   }
 }
 
 // ==========================================
-// EXPIRY CHECKER (tiap 2 menit)
+// EXPIRY CHECKER
 // ==========================================
 setInterval(
   async () => {
@@ -311,6 +262,115 @@ function getUptime(start) {
 }
 
 // ==========================================
+// AUTO-REGISTER LID DARI PESAN MASUK
+// ==========================================
+async function autoRegisterFromMessage(sock, msg) {
+  try {
+    const senderJid = msg.key.participant || msg.key.remoteJid;
+    if (!senderJid) return;
+
+    const senderPhone = jidToDigits(senderJid);
+    if (senderPhone.length < 8) return;
+
+    // ── participantLid: field kunci dari Baileys ──
+    // Tersedia di group message, berisi LID dari sender
+    const participantLid =
+      msg.key?.participantLid || msg.key?.participant_lid || null;
+
+    if (participantLid && isPhoneJid(senderJid)) {
+      registerLidMapping(participantLid, senderPhone);
+    }
+
+    // ── store.contacts ──
+    if (sock.store?.contacts) {
+      const contact = sock.store.contacts[senderJid];
+      if (contact?.lid) {
+        registerLidMapping(contact.lid, senderPhone);
+      }
+
+      const altFormats = [
+        `${senderPhone}@s.whatsapp.net`,
+        `${senderPhone}:0@s.whatsapp.net`,
+      ];
+      for (const alt of altFormats) {
+        const c = sock.store.contacts[alt];
+        if (c?.lid) {
+          registerLidMapping(c.lid, senderPhone);
+          break;
+        }
+      }
+    }
+
+    // ── Mentions dalam pesan ──
+    const mentionedJids =
+      msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+
+    for (const mJid of mentionedJids) {
+      if (!isLidJid(mJid) && isPhoneJid(mJid)) {
+        const phone = jidToDigits(mJid);
+        if (phone.length >= 8 && sock.store?.contacts) {
+          const c = sock.store.contacts[mJid];
+          if (c?.lid) {
+            registerLidMapping(c.lid, phone);
+          }
+        }
+      }
+    }
+
+    // ── participant info dari message ──
+    const participantInfo =
+      msg.message?.extendedTextMessage?.contextInfo?.participant ||
+      msg.message?.extendedTextMessage?.contextInfo?.remoteJid ||
+      null;
+
+    if (participantInfo && isPhoneJid(participantInfo)) {
+      const pPhone = jidToDigits(participantInfo);
+      if (pPhone.length >= 8 && sock.store?.contacts) {
+        const c = sock.store.contacts[participantInfo];
+        if (c?.lid) {
+          registerLidMapping(c.lid, pPhone);
+        }
+      }
+    }
+  } catch (e) {
+    // silent — jangan crash karena LID mapping
+  }
+}
+
+// ==========================================
+// SCAN GRUP: Populate LID map dari semua peserta
+// Dipanggil saat bot connect atau saat butuh resolve
+// ==========================================
+async function scanGroupForLidMapping(sock, groupJid) {
+  try {
+    const meta = await sock.groupMetadata(groupJid);
+    const participants = meta.participants || [];
+
+    let mapped = 0;
+    for (const p of participants) {
+      // Case 1: p.id = phone, p.lid = LID
+      if (p.lid && isPhoneJid(p.id) && isLidJid(p.lid)) {
+        registerLidMapping(p.lid, jidToDigits(p.id));
+        mapped++;
+      }
+      // Case 2: p.id = LID, p.lid = phone
+      if (p.lid && isLidJid(p.id) && isPhoneJid(p.lid)) {
+        registerLidMapping(p.id, jidToDigits(p.lid));
+        mapped++;
+      }
+    }
+
+    if (mapped > 0) {
+      console.log(
+        `🔍 [ScanGroup] ${groupJid}: ${mapped} LID mapped dari ${participants.length} participants`,
+      );
+    }
+  } catch (e) {
+    // silent
+  }
+}
+
+// ==========================================
 // START BOT
 // ==========================================
 async function startBot() {
@@ -334,6 +394,9 @@ async function startBot() {
   activeSock = sock;
   store?.bind(sock.ev);
 
+  // ==========================================
+  // CONNECTION UPDATE
+  // ==========================================
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
@@ -344,22 +407,49 @@ async function startBot() {
       qrcode.generate(qr, { small: true });
     }
 
-    // Di index.js — dalam event connection.update "open"
-    // Tambahkan setelah: botStatus.connected = true;
-
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
-
-      // ✅ Set runtime info dari handler_admin_group
       setBotRuntimeInfo(sock);
 
       console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
       console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}`);
 
+      // Register bot sendiri
+      if (sock.user?.id && sock.user?.lid) {
+        const botPhone = jidToDigits(sock.user.id);
+        if (botPhone.length >= 8) {
+          registerLidMapping(sock.user.lid, botPhone);
+        }
+      }
+
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   ✅ BOT + PAKASIR QRIS READY!       ║");
       console.log("╚══════════════════════════════════════╝\n");
+
+      // Scan semua grup yang diketahui store
+      setTimeout(async () => {
+        try {
+          if (sock.store?.chats) {
+            const groupChats = Object.keys(sock.store.chats).filter((id) =>
+              id.endsWith("@g.us"),
+            );
+            console.log(
+              `🔍 Scanning ${groupChats.length} grup untuk LID mapping...`,
+            );
+            for (const gid of groupChats) {
+              await scanGroupForLidMapping(sock, gid);
+              // Delay kecil agar tidak rate-limit
+              await new Promise((r) => setTimeout(r, 300));
+            }
+            console.log(
+              `✅ Scan grup selesai. LID map: ${getLidMapSize()} entries`,
+            );
+          }
+        } catch (e) {
+          console.error(`⚠️ Scan grup error: ${e.message}`);
+        }
+      }, 5000); // Delay 5 detik setelah connect
     }
 
     if (connection === "close") {
@@ -374,17 +464,66 @@ async function startBot() {
         console.log("🔄 Reconnecting...");
         startBot();
       } else {
-        console.log("🚪 Logged out. Hapus auth_session lalu scan ulang.");
+        console.log("🚪 Logged out.");
       }
     }
   });
 
   sock.ev.on("creds.update", saveCreds);
 
+  // ==========================================
+  // CONTACTS UPSERT — Sumber utama LID mapping
+  // ==========================================
+  sock.ev.on("contacts.upsert", (contacts) => {
+    console.log(`📇 contacts.upsert: ${contacts.length} contacts`);
+    processContactsUpsert(contacts);
+    console.log(`   LID map size: ${getLidMapSize()}`);
+  });
+
+  // ==========================================
+  // CONTACTS UPDATE
+  // ==========================================
+  sock.ev.on("contacts.update", (updates) => {
+    for (const update of updates) {
+      processContact(update);
+    }
+  });
+
+  // ==========================================
+  // CHATS UPSERT
+  // ==========================================
+  sock.ev.on("chats.upsert", (chats) => {
+    for (const chat of chats) {
+      if (chat.id && chat.lid) {
+        if (isLidJid(chat.lid) && isPhoneJid(chat.id)) {
+          registerLidMapping(chat.lid, jidToDigits(chat.id));
+        }
+        if (isPhoneJid(chat.lid) && isLidJid(chat.id)) {
+          registerLidMapping(chat.id, jidToDigits(chat.lid));
+        }
+      }
+    }
+  });
+
+  // ==========================================
+  // GROUP PARTICIPANTS UPDATE
+  // ==========================================
+  sock.ev.on("group-participants.update", async (update) => {
+    try {
+      const { id: groupId } = update;
+      await scanGroupForLidMapping(sock, groupId);
+    } catch (e) {}
+  });
+
+  // ==========================================
+  // MESSAGES UPSERT
+  // ==========================================
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
+
     for (const msg of messages) {
       botStatus.messageCount++;
+      await autoRegisterFromMessage(sock, msg);
       await handleMessage(sock, msg);
     }
   });
