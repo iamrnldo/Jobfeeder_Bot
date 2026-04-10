@@ -12,7 +12,7 @@ const ADMIN_DB_PATH = path.join(__dirname, "database", "admin.json");
 const BANNER_PATH = path.join(__dirname, "images", "menu", "banner_menu.jpg");
 
 // ==========================================
-// SHARED HELPERS (dipakai semua handler)
+// SHARED HELPERS
 // ==========================================
 function normalizeNumber(num) {
   return String(num).replace(/[^0-9]/g, "");
@@ -34,6 +34,89 @@ function cleanNumber(jid) {
   return jidToDigits(jid);
 }
 
+// ==========================================
+// ✅ CEK APAKAH JID ADALAH LID
+// LID format: "xxxxx@lid" atau "xxxxx:0@lid"
+// ==========================================
+function isLidJid(jid) {
+  if (!jid) return false;
+  return jid.endsWith("@lid");
+}
+
+// ==========================================
+// ✅ RESOLVE NOMOR DARI MENTION JID
+//
+// Masalah: saat @mention di group, JID yang
+// didapat bisa berupa LID bukan nomor HP.
+//
+// LID: "38650712698961:0@lid"
+// HP:  "6285707627202@s.whatsapp.net"
+//
+// Solusi: coba ambil nomor dari sock.store
+// atau dari groupMetadata participants
+// ==========================================
+async function resolvePhoneFromMention(sock, mentionJid, groupJid) {
+  const domain = (mentionJid.split("@")[1] || "").toLowerCase();
+
+  // Bukan LID → langsung pakai
+  if (domain !== "lid") {
+    const number = jidToDigits(mentionJid);
+    console.log(`📱 Mention non-LID: "${mentionJid}" → "${number}"`);
+    return number;
+  }
+
+  // ── LID: coba resolve dari group participants ──
+  console.log(`🔍 Mention LID: "${mentionJid}" → coba resolve...`);
+
+  if (groupJid) {
+    try {
+      const meta = await sock.groupMetadata(groupJid);
+      const lidDigits = jidToDigits(mentionJid);
+
+      for (const p of meta.participants) {
+        const pDomain = (p.id.split("@")[1] || "").toLowerCase();
+        const pDigits = jidToDigits(p.id);
+
+        // Cari participant dengan LID yang sama
+        if (pDomain === "lid" && pDigits === lidDigits) {
+          // Cek apakah ada entry lain dengan nomor HP yang cocok
+          // Baileys kadang punya dua entry: satu @lid satu @s.whatsapp.net
+          console.log(`   Found LID match: "${p.id}"`);
+        }
+
+        // Jika participant bukan LID, coba cocokkan via suffix
+        if (pDomain !== "lid" && pDigits.length >= 8 && lidDigits.length >= 8) {
+          // Tidak bisa langsung cocokkan LID dengan nomor HP
+          // LID dan nomor HP adalah identifier yang berbeda
+        }
+      }
+
+      // Coba cari via contactStore jika tersedia
+      const contact =
+        sock.store?.contacts?.[mentionJid] ||
+        sock.store?.contacts?.[mentionJid.replace("@lid", "@s.whatsapp.net")];
+
+      if (contact) {
+        const phone = contact.notify || contact.name || null;
+        if (phone) {
+          console.log(`   Contact store: "${phone}"`);
+        }
+      }
+    } catch (e) {
+      console.error(`   groupMetadata error: ${e.message}`);
+    }
+  }
+
+  // ── Fallback: simpan LID digits sebagai identifier ──
+  // Nanti saat cek isAdminBot(), akan dicocokkan dengan suffix
+  const lidNumber = jidToDigits(mentionJid);
+  console.log(`   ⚠️ LID tidak bisa di-resolve, simpan digits: "${lidNumber}"`);
+  return lidNumber;
+}
+
+// ==========================================
+// ADMIN DATABASE
+// ==========================================
 function loadAdmins() {
   try {
     const dir = path.dirname(ADMIN_DB_PATH);
@@ -54,30 +137,42 @@ function saveAdmins(admins) {
   fs.writeFileSync(ADMIN_DB_PATH, JSON.stringify(admins, null, 2));
 }
 
+// ==========================================
+// ROLE CHECKS
+// ==========================================
 function isOwner(number) {
   return normalizeNumber(number) === normalizeNumber(config.ownerNumber);
 }
 
-// Tambahkan di handler_owner.js
-// Ganti fungsi isAdminBot yang lama
-
+// ✅ isAdminBot: cek exact match DAN suffix match
+// untuk handle perbedaan LID vs nomor HP
 function isAdminBot(number) {
   const admins = loadAdmins();
-  // ✅ normalizeNumber strip semua non-digit termasuk device suffix
   const n = normalizeNumber(number);
+
   return admins.some((a) => {
     const an = normalizeNumber(a);
+
     // Exact match
     if (an === n) return true;
-    // Suffix match 8 digit (toleran perbedaan kode negara)
+
+    // Suffix match 8 digit
     if (an.length >= 8 && n.length >= 8 && an.slice(-8) === n.slice(-8))
       return true;
+
     return false;
   });
 }
 
 function isAdminOrOwner(number) {
   return isOwner(number) || isAdminBot(number);
+}
+
+function ensureBannerDir() {
+  const BANNER_DIR = path.join(__dirname, "images", "menu");
+  if (!fs.existsSync(BANNER_DIR)) {
+    fs.mkdirSync(BANNER_DIR, { recursive: true });
+  }
 }
 
 // ==========================================
@@ -117,12 +212,6 @@ function getOwnerMenuSection() {
           : "Upload banner (belum ada)",
         id: "owner_banner",
       },
-      {
-        header: "📊",
-        title: "Statistik Bot",
-        description: "Uptime, total pesan, total order",
-        id: "owner_stats",
-      },
     ],
   };
 }
@@ -132,7 +221,9 @@ function getOwnerMenuSection() {
 // ==========================================
 async function handleOwnerManageAdmin(sock, jid, senderNumber) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
@@ -185,34 +276,84 @@ async function handleOwnerManageAdmin(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// OWNER: TAMBAH ADMIN BOT
+// ✅ OWNER: TAMBAH ADMIN BOT
+//
+// PENTING: Gunakan nomor HP langsung, BUKAN @mention
+// karena @mention di group bisa menghasilkan LID
+// yang berbeda dengan nomor HP.
+//
+// Cara yang benar:
+//   /addadmin 628xxxxxxxxxx   ← nomor HP langsung ✅
+//   /addadmin @user           ← bisa LID, tidak reliable ⚠️
 // ==========================================
 async function handleOwnerAddAdmin(sock, msg, jid, senderNumber, rawText) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
-  let target = "";
   const mentions =
     msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
 
-  if (mentions.length > 0) {
-    target = jidToDigits(mentions[0]);
-  } else {
-    const parts = rawText.split(/\s+/);
-    if (parts.length >= 2) target = normalizeNumber(parts[1]);
+  let target = "";
+  let usedMention = false;
+
+  // ── Coba dari teks dulu (lebih reliable) ──
+  const parts = rawText.trim().split(/\s+/);
+  // parts[0] = "/addadmin", parts[1] = nomor atau @mention
+  if (parts.length >= 2) {
+    const raw = parts[1];
+    // Jika tidak ada @, berarti nomor langsung
+    if (!raw.startsWith("@")) {
+      target = normalizeNumber(raw);
+      console.log(`📱 addadmin via nomor langsung: "${target}"`);
+    }
   }
 
-  if (!target || target.length < 10) {
+  // ── Jika dari mention ──
+  if (!target && mentions.length > 0) {
+    const mentionJid = mentions[0];
+    usedMention = true;
+
+    if (isLidJid(mentionJid)) {
+      // ⚠️ LID — tidak bisa di-resolve ke nomor HP
+      // Minta owner input nomor langsung
+      await sock.sendMessage(jid, {
+        text:
+          `⚠️ *TIDAK BISA PROSES MENTION INI*\n\n` +
+          `WhatsApp menggunakan *LID* (ID internal) untuk\n` +
+          `user ini, bukan nomor telepon.\n\n` +
+          `LID: \`${mentionJid}\`\n\n` +
+          `✅ *Gunakan nomor HP langsung:*\n` +
+          `\`\`\`/addadmin 628xxxxxxxxxx\`\`\`\n\n` +
+          `Tanya nomor HP-nya terlebih dahulu.`,
+      });
+      return;
+    }
+
+    // Mention dengan nomor HP normal
+    target = jidToDigits(mentionJid);
+    console.log(`📱 addadmin via mention: "${mentionJid}" → "${target}"`);
+  }
+
+  if (!target || target.length < 8) {
     await sock.sendMessage(jid, {
-      text: "❌ Format: `/addadmin 628xxxxxxxxxx`",
+      text:
+        `❌ *Format salah atau nomor tidak valid.*\n\n` +
+        `✅ *Gunakan nomor HP langsung:*\n` +
+        `\`\`\`/addadmin 628xxxxxxxxxx\`\`\`\n\n` +
+        `⚠️ Hindari @mention — bisa menghasilkan\n` +
+        `LID internal yang berbeda dengan nomor HP.`,
     });
     return;
   }
 
   if (isOwner(target)) {
-    await sock.sendMessage(jid, { text: "👑 Nomor tersebut adalah Owner." });
+    await sock.sendMessage(jid, {
+      text: "👑 Nomor tersebut adalah Owner.",
+    });
     return;
   }
 
@@ -232,7 +373,9 @@ async function handleOwnerAddAdmin(sock, msg, jid, senderNumber, rawText) {
     text:
       `✅ *ADMIN BOT DITAMBAHKAN*\n\n` +
       `📱 Nomor: +${target}\n` +
-      `📊 Total admin: ${admins.length}`,
+      `${usedMention ? "⚠️ _Dari mention — pastikan nomor benar_\n" : ""}` +
+      `📊 Total admin: ${admins.length}\n\n` +
+      `_Admin bisa langsung akses panel dengan ketik *menu*_`,
   });
 }
 
@@ -241,14 +384,16 @@ async function handleOwnerAddAdmin(sock, msg, jid, senderNumber, rawText) {
 // ==========================================
 async function handleOwnerDelAdmin(sock, jid, senderNumber, rawText) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
   const parts = rawText.split(/\s+/);
   const target = parts.length >= 2 ? normalizeNumber(parts[1]) : "";
 
-  if (!target || target.length < 10) {
+  if (!target || target.length < 8) {
     await sock.sendMessage(jid, {
       text: "❌ Format: `/deladmin 628xxxxxxxxxx`",
     });
@@ -263,7 +408,9 @@ async function handleOwnerDelAdmin(sock, jid, senderNumber, rawText) {
 // ==========================================
 async function handleOwnerDelAdminFromList(sock, jid, senderNumber, rawId) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
@@ -276,12 +423,16 @@ async function handleOwnerDelAdminFromList(sock, jid, senderNumber, rawId) {
 // ==========================================
 async function executeOwnerDeleteAdmin(sock, jid, senderNumber, target) {
   if (isOwner(target)) {
-    await sock.sendMessage(jid, { text: "⛔ Tidak bisa menghapus Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ Tidak bisa menghapus Owner.",
+    });
     return;
   }
 
   if (!isAdminBot(target)) {
-    await sock.sendMessage(jid, { text: `❌ *+${target}* bukan admin bot.` });
+    await sock.sendMessage(jid, {
+      text: `❌ *+${target}* bukan admin bot.`,
+    });
     return;
   }
 
@@ -304,7 +455,9 @@ async function executeOwnerDeleteAdmin(sock, jid, senderNumber, target) {
 // ==========================================
 async function handleOwnerListAdmin(sock, jid, senderNumber) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
@@ -327,16 +480,22 @@ async function handleOwnerListAdmin(sock, jid, senderNumber) {
     });
   }
 
-  text += `\n📊 Total: ${admins.length + 1} (termasuk owner)`;
+  text +=
+    `\n📊 Total: ${admins.length + 1} (termasuk owner)\n\n` +
+    `⚠️ _Pastikan nomor tersimpan adalah nomor HP,_\n` +
+    `_bukan LID internal WhatsApp._`;
+
   await sock.sendMessage(jid, { text });
 }
 
 // ==========================================
-// OWNER: LIST HAPUS ADMIN (pilihan)
+// OWNER: LIST HAPUS ADMIN
 // ==========================================
 async function handleOwnerDelAdminList(sock, jid, senderNumber) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
@@ -379,7 +538,9 @@ async function handleOwnerDelAdminList(sock, jid, senderNumber) {
 // ==========================================
 async function handleOwnerListOrders(sock, jid, senderNumber) {
   if (!isOwner(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK* — Hanya Owner." });
+    await sock.sendMessage(jid, {
+      text: "⛔ *AKSES DITOLAK* — Hanya Owner.",
+    });
     return;
   }
 
@@ -433,55 +594,53 @@ async function handleOwnerListOrders(sock, jid, senderNumber) {
 async function handleOwnerRouter(sock, msg, jid, senderNumber, rawId) {
   if (!isOwner(senderNumber)) return;
 
-  // Manage admin menu
   if (rawId === "owner_manage_admin") {
     await handleOwnerManageAdmin(sock, jid, senderNumber);
     return;
   }
 
-  // Tambah admin
   if (rawId === "owner_add_admin") {
     await sock.sendMessage(jid, {
       text:
         `➕ *TAMBAH ADMIN BOT*\n\n` +
-        `Kirim nomor admin baru:\n` +
-        `\`\`\`/addadmin 628xxxxxxxxxx\`\`\``,
+        `Ketik nomor HP langsung:\n` +
+        `\`\`\`/addadmin 628xxxxxxxxxx\`\`\`\n\n` +
+        `⚠️ *PENTING:* Gunakan nomor HP,\n` +
+        `bukan @mention — karena @mention\n` +
+        `di group bisa menghasilkan LID\n` +
+        `yang berbeda dengan nomor HP.\n\n` +
+        `Contoh:\n` +
+        `\`\`\`/addadmin 6285707627202\`\`\``,
     });
     return;
   }
 
-  // List admin
   if (rawId === "owner_list_admin") {
     await handleOwnerListAdmin(sock, jid, senderNumber);
     return;
   }
 
-  // Hapus admin (tampilkan list)
   if (rawId === "owner_del_admin") {
     await handleOwnerDelAdminList(sock, jid, senderNumber);
     return;
   }
 
-  // Hapus admin dari list
   if (rawId.startsWith("owner_deladmin_")) {
     await handleOwnerDelAdminFromList(sock, jid, senderNumber, rawId);
     return;
   }
 
-  // Daftar pesanan
   if (rawId === "owner_orders") {
     await handleOwnerListOrders(sock, jid, senderNumber);
     return;
   }
 
-  // Group manager → delegate ke handler_admin_group
   if (rawId === "owner_group_manager") {
     const { handleGroupManager } = require("./handler_admin_group");
     await handleGroupManager(sock, jid, senderNumber);
     return;
   }
 
-  // Edit banner → delegate ke handler_admin
   if (rawId === "owner_banner") {
     const { handleEditBanner } = require("./handler_admin");
     await handleEditBanner(sock, jid, senderNumber);
@@ -493,19 +652,14 @@ async function handleOwnerRouter(sock, msg, jid, senderNumber, rawId) {
 // EXPORT
 // ==========================================
 module.exports = {
-  // Panel
   getOwnerMenuSection,
   handleOwnerManageAdmin,
   handleOwnerRouter,
-
-  // Admin management
   handleOwnerAddAdmin,
   handleOwnerDelAdmin,
   handleOwnerDelAdminFromList,
   handleOwnerListAdmin,
   handleOwnerListOrders,
-
-  // Shared helpers (diexport agar bisa dipakai file lain)
   loadAdmins,
   saveAdmins,
   isOwner,
@@ -515,4 +669,6 @@ module.exports = {
   jidToDigits,
   getNumberFromJid,
   cleanNumber,
+  isLidJid,
+  resolvePhoneFromMention,
 };
