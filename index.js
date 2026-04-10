@@ -349,23 +349,12 @@ async function startBot() {
       botStatus.connected = true;
       activeSock = sock;
 
-      // ✅ Cache bot identity untuk group admin detection
-      const { setBotLidCache, setBotPhoneCache } = require("./handler_admin");
+      // ✅ Cache bot identity untuk deteksi di group
+      const { setBotRuntimeInfo } = require("./handler_admin");
+      setBotRuntimeInfo(sock);
 
-      const userId = sock.user?.id || "";
-      const userLid = sock.user?.lid || "";
-
-      setBotPhoneCache(userId);
-      if (userLid) setBotLidCache(userLid);
-
-      console.log(`🤖 Bot ID: ${userId}`);
-      console.log(`🔑 Bot LID: ${userLid || "tidak tersedia"}`);
-
-      // ✅ Juga listen group-participants-update untuk update LID cache
-      sock.ev.on("group-participants.update", async (update) => {
-        // Jika bot di-promote/demote, clear cache agar re-detect
-        console.log(`👥 Group participants update: ${JSON.stringify(update)}`);
-      });
+      console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
+      console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}`);
 
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   ✅ BOT + PAKASIR QRIS READY!       ║");
