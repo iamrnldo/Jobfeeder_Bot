@@ -173,11 +173,41 @@ async function handleMessage(sock, msg) {
     return;
   }
 
+  // ── kick command ─────────────────────────
+  if (text.startsWith("/kick") || text.startsWith("kick ")) {
+    await adminGroup.handleKickCommand(sock, msg, jid, senderNumber);
+    return;
+  }
+
+  // ── add command ──────────────────────────
+  if (text.startsWith("/add ") || text.startsWith("add ")) {
+    await adminGroup.handleAddCommand(sock, msg, jid, senderNumber, rawText);
+    return;
+  }
+
+  // ── Add member text input (state handler) ─
+  const { addMemberState, handleAddMemberTextInput } = adminGroup;
+  if (addMemberState.has(senderNumber)) {
+    const handled = await handleAddMemberTextInput(
+      sock,
+      msg,
+      jid,
+      senderNumber,
+      rawText,
+    );
+    if (handled) return;
+  }
+
   if (
     text.startsWith("grpselect_") ||
     text.startsWith("grppromote_") ||
     text.startsWith("grpdemote_") ||
     text.startsWith("grpnotadmin_") ||
+    text.startsWith("grpkick_") || // ← tambah
+    text.startsWith("grpkicklist_") || // ← tambah
+    text.startsWith("grpaddmember_") || // ← tambah
+    text === "grpadmin_add_member" || // ← tambah
+    text === "grpadmin_kick_member" || // ← tambah
     text === "grpadmin_banner"
   ) {
     await adminGroup.handleGroupAdminRouter(
