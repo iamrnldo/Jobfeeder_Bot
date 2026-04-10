@@ -2,12 +2,17 @@
 //  HANDLER_ADMIN.JS
 //  Admin / Owner Panel + Edit Banner + Group Admin Manager
 //  ✅ Fixed: LID-based bot detection
-//  Bot LID: 127569823277085
+//  ✅ Fixed: @Mention NamaKontak
 // ==========================================
 
 const fs = require("fs");
 const path = require("path");
 const config = require("./config");
+const {
+  getParticipantName,
+  getNameFromStore,
+  resolveName,
+} = require("./utils/contactHelper");
 
 // ==========================================
 // PATHS
@@ -22,17 +27,12 @@ const BANNER_DIR = path.join(__dirname, "images", "menu");
 const bannerEditState = new Map();
 
 // ==========================================
-// ✅ BOT LID REGISTRY
-// Daftar semua kemungkinan identifier bot.
-// Tambahkan LID baru jika bot ganti device.
+// BOT LID REGISTRY
 // ==========================================
-const BOT_LID_LIST = [
-  "127569823277085", // LID utama (dari screenshot)
-];
+const BOT_LID_LIST = ["127569823277085"];
 
-// Runtime cache — diisi dari sock.user saat connect
-let runtimeBotPhone = null; // nomor telepon bot
-let runtimeBotLid = null; // LID dari sock.user.lid
+let runtimeBotPhone = null;
+let runtimeBotLid = null;
 
 // ==========================================
 // ADMIN DATABASE
@@ -64,9 +64,6 @@ function normalizeNumber(num) {
   return String(num).replace(/[^0-9]/g, "");
 }
 
-// Ekstrak digit bersih dari JID apapun
-// "628xxx:12@s.whatsapp.net" → "628xxx"
-// "127569823277085:0@lid"   → "127569823277085"
 function jidToDigits(jid) {
   if (!jid) return "";
   return jid
@@ -104,8 +101,7 @@ function ensureBannerDir() {
 }
 
 // ==========================================
-// ✅ SET RUNTIME BOT INFO
-// Dipanggil dari index.js saat bot connect
+// SET RUNTIME BOT INFO
 // ==========================================
 function setBotRuntimeInfo(sock) {
   const userId = sock.user?.id || "";
@@ -118,7 +114,6 @@ function setBotRuntimeInfo(sock) {
 
   if (userLid) {
     runtimeBotLid = jidToDigits(userLid);
-    // Tambahkan ke BOT_LID_LIST jika belum ada
     if (!BOT_LID_LIST.includes(runtimeBotLid)) {
       BOT_LID_LIST.push(runtimeBotLid);
       console.log(`💾 Bot LID added to registry: "${runtimeBotLid}"`);
@@ -131,13 +126,7 @@ function setBotRuntimeInfo(sock) {
 }
 
 // ==========================================
-// ✅ CORE: IS PARTICIPANT BOT?
-//
-// Cek apakah participant adalah bot dengan
-// mencocokkan semua kemungkinan identifier:
-//   1. LID dari BOT_LID_LIST (hardcoded + runtime)
-//   2. Phone number dari sock.user.id
-//   3. Runtime phone cache
+// IS PARTICIPANT BOT?
 // ==========================================
 function isParticipantBot(participantJid) {
   if (!participantJid) return false;
@@ -145,22 +134,16 @@ function isParticipantBot(participantJid) {
   const pDigits = jidToDigits(participantJid);
   const pDomain = (participantJid.split("@")[1] || "").toLowerCase();
 
-  // ── Check 1: LID registry ────────────────
   if (pDomain === "lid") {
     for (const lid of BOT_LID_LIST) {
-      if (pDigits === lid) {
-        return true;
-      }
+      if (pDigits === lid) return true;
     }
   }
 
-  // ── Check 2: Phone number ────────────────
   if (pDomain !== "lid" && runtimeBotPhone && pDigits === runtimeBotPhone) {
     return true;
   }
 
-  // ── Check 3: Suffix match (phone) ────────
-  // Toleran perbedaan kode negara
   if (
     pDomain !== "lid" &&
     runtimeBotPhone &&
@@ -175,8 +158,7 @@ function isParticipantBot(participantJid) {
 }
 
 // ==========================================
-// ✅ FIND BOT IN PARTICIPANTS
-// Return participant object jika ketemu
+// FIND BOT IN PARTICIPANTS
 // ==========================================
 function findBotInParticipants(participants) {
   if (!participants || participants.length === 0) return null;
@@ -194,9 +176,7 @@ function findBotInParticipants(participants) {
       `   [${isBot ? "✅BOT" : "   "}] "${p.id}" | domain: ${pDomain} | digits: "${pDigits}" | admin: ${p.admin || "none"}`,
     );
 
-    if (isBot) {
-      return p;
-    }
+    if (isBot) return p;
   }
 
   console.log(`   ❌ Bot not found in participants`);
@@ -204,7 +184,7 @@ function findBotInParticipants(participants) {
 }
 
 // ==========================================
-// ✅ CEK BOT ADMIN DI GROUP
+// CEK BOT ADMIN DI GROUP
 // ==========================================
 async function isBotAdminInGroup(sock, groupJid) {
   try {
@@ -213,7 +193,6 @@ async function isBotAdminInGroup(sock, groupJid) {
 
     let botP = findBotInParticipants(meta.participants);
 
-    // Fallback: cache groupFetchAllParticipating
     if (!botP) {
       console.log(`   ⚠️ Trying cache fallback...`);
       try {
@@ -221,9 +200,7 @@ async function isBotAdminInGroup(sock, groupJid) {
         const cached = allGroups[groupJid];
         if (cached?.participants) {
           botP = findBotInParticipants(cached.participants);
-          if (botP) {
-            console.log(`   ✅ Found in cache: "${botP.id}"`);
-          }
+          if (botP) console.log(`   ✅ Found in cache: "${botP.id}"`);
         }
       } catch (e) {
         console.error(`   Cache fallback error: ${e.message}`);
@@ -247,7 +224,7 @@ async function isBotAdminInGroup(sock, groupJid) {
 }
 
 // ==========================================
-// ✅ GET JOINED GROUPS
+// GET JOINED GROUPS
 // ==========================================
 async function getJoinedGroups(sock) {
   try {
@@ -264,7 +241,6 @@ async function getJoinedGroups(sock) {
       let groupName = g.subject || "Unknown Group";
       let botIsAdmin = false;
 
-      // Fetch fresh metadata
       try {
         const freshMeta = await sock.groupMetadata(g.id);
         participants = freshMeta.participants || [];
@@ -275,7 +251,6 @@ async function getJoinedGroups(sock) {
         );
       }
 
-      // Find bot
       const botP = findBotInParticipants(participants);
       if (botP) {
         botIsAdmin = botP.admin === "admin" || botP.admin === "superadmin";
@@ -286,12 +261,7 @@ async function getJoinedGroups(sock) {
         console.log(`   ❌ "${groupName}" → bot not found`);
       }
 
-      result.push({
-        jid: g.id,
-        name: groupName,
-        participants,
-        botIsAdmin,
-      });
+      result.push({ jid: g.id, name: groupName, participants, botIsAdmin });
     }
 
     const adminCount = result.filter((g) => g.botIsAdmin).length;
@@ -541,7 +511,7 @@ async function handleAdminListOrders(sock, jid) {
 }
 
 // ==========================================
-// 🖼️ HANDLER: MULAI MODE EDIT BANNER
+// HANDLER: MULAI MODE EDIT BANNER
 // ==========================================
 async function handleEditBanner(sock, jid, senderNumber) {
   if (!isAdminOrOwner(senderNumber)) {
@@ -614,7 +584,7 @@ async function handleEditBanner(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// 🖼️ HANDLER: PROSES GAMBAR MASUK
+// HANDLER: PROSES GAMBAR MASUK
 // ==========================================
 async function handleIncomingImage(sock, msg, jid, senderNumber) {
   const state = bannerEditState.get(senderNumber);
@@ -740,7 +710,6 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
     return;
   }
 
-  // Bersihkan backup lama (max 3)
   try {
     const backupFiles = fs
       .readdirSync(BANNER_DIR)
@@ -755,7 +724,7 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
 }
 
 // ==========================================
-// 👥 GROUP ADMIN MANAGER — MENU UTAMA
+// GROUP ADMIN MANAGER — MENU UTAMA
 // ==========================================
 async function handleGroupManager(sock, jid, senderNumber) {
   if (!isAdminOrOwner(senderNumber)) {
@@ -824,7 +793,7 @@ async function handleGroupManager(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// 👥 PILIH GROUP UNTUK AKSI
+// PILIH GROUP UNTUK AKSI
 // ==========================================
 async function handleGroupSelectForAction(sock, jid, senderNumber, action) {
   if (!isAdminOrOwner(senderNumber)) {
@@ -983,7 +952,6 @@ async function handleGroupSelectedForPromote(
     return;
   }
 
-  // Exclude: admin + bot sendiri
   const members = meta.participants.filter((p) => {
     if (p.admin === "admin" || p.admin === "superadmin") return false;
     if (isParticipantBot(p.id)) return false;
@@ -1011,10 +979,13 @@ async function handleGroupSelectedForPromote(
       title: `👤 Member (${i + 1}–${Math.min(i + 10, members.length)})`,
       rows: chunk.map((p) => {
         const number = jidToDigits(p.id);
+        // ✅ Tampilkan nama di list pilih member
+        const name = getParticipantName(p);
+        const displayName = name !== number ? name : `+${number}`;
         return {
           header: `⬆️ Promote ke Admin`,
-          title: `+${number}`,
-          description: `Jadikan +${number} admin group`,
+          title: displayName,
+          description: `+${number}`,
           id: `grppromote_${groupJid}__${p.id}`,
         };
       }),
@@ -1064,7 +1035,6 @@ async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
     return;
   }
 
-  // Admin biasa — exclude: superadmin + bot sendiri
   const admins = meta.participants.filter((p) => {
     if (p.admin !== "admin") return false;
     if (isParticipantBot(p.id)) return false;
@@ -1095,10 +1065,13 @@ async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
       title: `🛡️ Admin (${i + 1}–${Math.min(i + 10, admins.length)})`,
       rows: chunk.map((p) => {
         const number = jidToDigits(p.id);
+        // ✅ Tampilkan nama di list pilih admin
+        const name = getParticipantName(p);
+        const displayName = name !== number ? name : `+${number}`;
         return {
           header: `⬇️ Demote ke Member`,
-          title: `+${number}`,
-          description: `Turunkan +${number} jadi member`,
+          title: displayName,
+          description: `+${number}`,
           id: `grpdemote_${groupJid}__${p.id}`,
         };
       }),
@@ -1127,7 +1100,7 @@ async function handleGroupSelectedForDemote(sock, jid, senderNumber, groupJid) {
 }
 
 // ==========================================
-// VIEW: INFO ADMIN GROUP
+// VIEW: INFO ADMIN GROUP ✅ DENGAN MENTION
 // ==========================================
 async function handleGroupViewAdmins(sock, jid, senderNumber, groupJid) {
   if (!isAdminOrOwner(senderNumber)) return;
@@ -1151,6 +1124,12 @@ async function handleGroupViewAdmins(sock, jid, senderNumber, groupJid) {
     (p) => p.admin !== "admin" && p.admin !== "superadmin",
   );
 
+  // ✅ Kumpulkan semua JID admin untuk mentions
+  const allAdminJids = [
+    ...superAdmins.map((p) => p.id),
+    ...admins.map((p) => p.id),
+  ];
+
   let text =
     `╔══════════════════════════╗\n` +
     `║  👥 *INFO ADMIN GROUP*   ║\n` +
@@ -1165,27 +1144,32 @@ async function handleGroupViewAdmins(sock, jid, senderNumber, groupJid) {
 
   text += `\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
+  // ✅ Owner dengan @mention
   text += `👑 *Owner Group (${superAdmins.length}):*\n`;
   if (superAdmins.length === 0) {
     text += `└ _Tidak ada_\n`;
   } else {
     superAdmins.forEach((p, i) => {
-      const number = jidToDigits(p.id);
       const isBot = isParticipantBot(p.id);
+      const name = getParticipantName(p);
+      const number = jidToDigits(p.id);
       const prefix = i === superAdmins.length - 1 ? "└" : "├";
-      text += `${prefix} 📱 +${number}${isBot ? " 🤖" : ""}\n`;
+      // @nomor agar WhatsApp render sebagai mention
+      text += `${prefix} @${number}${isBot ? " 🤖" : ""} _(${name})_\n`;
     });
   }
 
+  // ✅ Admin dengan @mention
   text += `\n🛡️ *Admin Group (${admins.length}):*\n`;
   if (admins.length === 0) {
     text += `└ _Tidak ada admin tambahan_\n`;
   } else {
     admins.forEach((p, i) => {
-      const number = jidToDigits(p.id);
       const isBot = isParticipantBot(p.id);
+      const name = getParticipantName(p);
+      const number = jidToDigits(p.id);
       const prefix = i === admins.length - 1 ? "└" : "├";
-      text += `${prefix} 📱 +${number}${isBot ? " 🤖" : ""}\n`;
+      text += `${prefix} @${number}${isBot ? " 🤖" : ""} _(${name})_\n`;
     });
   }
 
@@ -1194,11 +1178,15 @@ async function handleGroupViewAdmins(sock, jid, senderNumber, groupJid) {
     `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
     `Ketik *group_manager* untuk kembali.`;
 
-  await sock.sendMessage(jid, { text });
+  // ✅ Kirim dengan mentions array — ini yang render @NamaKontak
+  await sock.sendMessage(jid, {
+    text,
+    mentions: allAdminJids,
+  });
 }
 
 // ==========================================
-// EXECUTE PROMOTE
+// EXECUTE PROMOTE ✅ DENGAN MENTION
 // ==========================================
 async function executeGroupPromote(
   sock,
@@ -1210,36 +1198,57 @@ async function executeGroupPromote(
   if (!isAdminOrOwner(senderNumber)) return;
 
   const targetNumber = jidToDigits(targetJid);
-  await sock.sendMessage(jid, { text: `⏳ *Mempromote +${targetNumber}...*` });
+  await sock.sendMessage(jid, { text: `⏳ *Mempromote...*` });
 
   try {
+    // ✅ Ambil nama SEBELUM promote
+    const metaBefore = await sock.groupMetadata(groupJid).catch(() => null);
+    const participantBefore = metaBefore?.participants?.find(
+      (p) => p.id === targetJid,
+    );
+    const targetName = participantBefore
+      ? getParticipantName(participantBefore)
+      : targetNumber;
+
     await sock.groupParticipantsUpdate(groupJid, [targetJid], "promote");
+
     const meta = await sock.groupMetadata(groupJid).catch(() => null);
     const groupName = meta?.subject || groupJid;
 
-    console.log(`⬆️ Promote OK: +${targetNumber} @ ${groupName}`);
+    console.log(
+      `⬆️ Promote OK: +${targetNumber} (${targetName}) @ ${groupName}`,
+    );
 
+    // ✅ Kirim dengan mention
     await sock.sendMessage(jid, {
       text:
         `✅ *PROMOTE BERHASIL!*\n\n` +
         `👥 *Group:* ${groupName}\n` +
-        `👤 *User:* +${targetNumber}\n` +
+        `👤 *User:* @${targetNumber}\n` +
+        `📛 *Nama:* ${targetName}\n` +
         `🔄 Member → 🛡️ Admin\n` +
         `⏰ ${new Date().toLocaleString("id-ID")}`,
+      mentions: [targetJid], // ✅ JID untuk render @NamaKontak
     });
   } catch (err) {
     console.error(`❌ Promote failed: ${err.message}`);
-    let msg = err.message;
-    if (msg.includes("not-authorized")) msg = "Bot bukan admin group.";
-    if (msg.includes("not-participant")) msg = "User bukan anggota group.";
+    let errMsg = err.message;
+    if (errMsg.includes("not-authorized")) errMsg = "Bot bukan admin group.";
+    if (errMsg.includes("not-participant"))
+      errMsg = "User bukan anggota group.";
+
     await sock.sendMessage(jid, {
-      text: `❌ *GAGAL PROMOTE*\n\n+${targetNumber}\n${msg}`,
+      text:
+        `❌ *GAGAL PROMOTE*\n\n` +
+        `👤 @${targetNumber}\n` +
+        `📛 Error: ${errMsg}`,
+      mentions: [targetJid],
     });
   }
 }
 
 // ==========================================
-// EXECUTE DEMOTE
+// EXECUTE DEMOTE ✅ DENGAN MENTION
 // ==========================================
 async function executeGroupDemote(
   sock,
@@ -1251,36 +1260,56 @@ async function executeGroupDemote(
   if (!isAdminOrOwner(senderNumber)) return;
 
   const targetNumber = jidToDigits(targetJid);
-  await sock.sendMessage(jid, { text: `⏳ *Mendemote +${targetNumber}...*` });
+  await sock.sendMessage(jid, { text: `⏳ *Mendemote...*` });
 
   try {
+    // ✅ Ambil nama SEBELUM demote (masih tercatat sebagai admin)
+    const metaBefore = await sock.groupMetadata(groupJid).catch(() => null);
+    const participantBefore = metaBefore?.participants?.find(
+      (p) => p.id === targetJid,
+    );
+    const targetName = participantBefore
+      ? getParticipantName(participantBefore)
+      : targetNumber;
+
     await sock.groupParticipantsUpdate(groupJid, [targetJid], "demote");
+
     const meta = await sock.groupMetadata(groupJid).catch(() => null);
     const groupName = meta?.subject || groupJid;
 
-    console.log(`⬇️ Demote OK: +${targetNumber} @ ${groupName}`);
+    console.log(
+      `⬇️ Demote OK: +${targetNumber} (${targetName}) @ ${groupName}`,
+    );
 
+    // ✅ Kirim dengan mention
     await sock.sendMessage(jid, {
       text:
         `✅ *DEMOTE BERHASIL!*\n\n` +
         `👥 *Group:* ${groupName}\n` +
-        `👤 *User:* +${targetNumber}\n` +
+        `👤 *User:* @${targetNumber}\n` +
+        `📛 *Nama:* ${targetName}\n` +
         `🔄 🛡️ Admin → Member\n` +
         `⏰ ${new Date().toLocaleString("id-ID")}`,
+      mentions: [targetJid], // ✅ JID untuk render @NamaKontak
     });
   } catch (err) {
     console.error(`❌ Demote failed: ${err.message}`);
-    let msg = err.message;
-    if (msg.includes("not-authorized")) msg = "Bot bukan admin group.";
-    if (msg.includes("not-participant")) msg = "Bukan anggota group.";
+    let errMsg = err.message;
+    if (errMsg.includes("not-authorized")) errMsg = "Bot bukan admin group.";
+    if (errMsg.includes("not-participant")) errMsg = "Bukan anggota group.";
+
     await sock.sendMessage(jid, {
-      text: `❌ *GAGAL DEMOTE*\n\n+${targetNumber}\n${msg}`,
+      text:
+        `❌ *GAGAL DEMOTE*\n\n` +
+        `👤 @${targetNumber}\n` +
+        `📛 Error: ${errMsg}`,
+      mentions: [targetJid],
     });
   }
 }
 
 // ==========================================
-// COMMAND /promote @user (di group)
+// COMMAND /promote @user (di group) ✅ DENGAN MENTION
 // ==========================================
 async function handlePromoteCommand(sock, msg, jid, senderNumber) {
   if (!jid.endsWith("@g.us")) {
@@ -1313,30 +1342,44 @@ async function handlePromoteCommand(sock, msg, jid, senderNumber) {
     return;
   }
 
+  // ✅ Ambil metadata untuk nama kontak
+  const meta = await sock.groupMetadata(jid).catch(() => null);
+
   const results = [];
+  const allMentions = [...mentions]; // semua JID untuk mention di hasil
+
   for (const targetJid of mentions) {
     const num = jidToDigits(targetJid);
+
+    // Ambil nama dari participant
+    const participant = meta?.participants?.find((p) => p.id === targetJid);
+    const name = participant ? getParticipantName(participant) : num;
+
     try {
       await sock.groupParticipantsUpdate(jid, [targetJid], "promote");
-      results.push(`✅ +${num} → 🛡️ Admin`);
-      console.log(`⬆️ Promote (cmd): +${num} oleh ${senderNumber}`);
+      results.push(`✅ @${num} _(${name})_ → 🛡️ Admin`);
+      console.log(`⬆️ Promote (cmd): +${num} (${name}) oleh ${senderNumber}`);
     } catch (err) {
       let e = "Gagal";
       if (err.message?.includes("not-authorized")) e = "Bot bukan admin";
       if (err.message?.includes("not-participant")) e = "Bukan anggota";
-      results.push(`❌ +${num} → ${e}`);
+      results.push(`❌ @${num} _(${name})_ → ${e}`);
     }
   }
 
+  // ✅ mentions = semua JID yang di-tag agar render @NamaKontak
   await sock.sendMessage(
     jid,
-    { text: `⬆️ *HASIL PROMOTE*\n\n${results.join("\n")}` },
+    {
+      text: `⬆️ *HASIL PROMOTE*\n\n${results.join("\n")}`,
+      mentions: allMentions,
+    },
     { quoted: msg },
   );
 }
 
 // ==========================================
-// COMMAND /demote @user (di group)
+// COMMAND /demote @user (di group) ✅ DENGAN MENTION
 // ==========================================
 async function handleDemoteCommand(sock, msg, jid, senderNumber) {
   if (!jid.endsWith("@g.us")) {
@@ -1369,24 +1412,39 @@ async function handleDemoteCommand(sock, msg, jid, senderNumber) {
     return;
   }
 
+  // ✅ Ambil metadata untuk nama kontak
+  const meta = await sock.groupMetadata(jid).catch(() => null);
+
   const results = [];
+  const allMentions = [...mentions];
+
   for (const targetJid of mentions) {
     const num = jidToDigits(targetJid);
+
+    const participant = meta?.participants?.find((p) => p.id === targetJid);
+    const name = participant ? getParticipantName(participant) : num;
+
     try {
       await sock.groupParticipantsUpdate(jid, [targetJid], "demote");
-      results.push(`✅ +${num} → 👤 Member`);
-      console.log(`⬇️ Demote (cmd): +${num} oleh ${senderNumber}`);
+      results.push(`✅ @${num} _(${name})_ → 👤 Member`);
+      console.log(`⬇️ Demote (cmd): +${num} (${name}) oleh ${senderNumber}`);
     } catch (err) {
       let e = "Gagal";
       if (err.message?.includes("not-authorized")) e = "Bot bukan admin";
       if (err.message?.includes("not-participant")) e = "Bukan anggota";
-      results.push(`❌ +${num} → ${e}`);
+      results.push(`❌ @${num} _(${name})_ → ${e}`);
     }
+
+    allMentions.push(targetJid);
   }
 
+  // ✅ mentions = semua JID yang di-tag
   await sock.sendMessage(
     jid,
-    { text: `⬇️ *HASIL DEMOTE*\n\n${results.join("\n")}` },
+    {
+      text: `⬇️ *HASIL DEMOTE*\n\n${results.join("\n")}`,
+      mentions: allMentions,
+    },
     { quoted: msg },
   );
 }
@@ -1498,29 +1556,20 @@ function getAdminMenuSection(senderNumber) {
 // EXPORT
 // ==========================================
 module.exports = {
-  // Bot admin
   handleAddAdmin,
   handleDelAdmin,
   handleDelAdminFromList,
   handleAdminListOrders,
-
-  // Banner
   handleEditBanner,
   handleIncomingImage,
-
-  // Group admin manager
   handleGroupManager,
   handleGroupSelectForAction,
   handleGroupAdminRouter,
   handlePromoteCommand,
   handleDemoteCommand,
-
-  // UI
   sendAdminList,
   sendAdminDeleteList,
   getAdminMenuSection,
-
-  // Utils
   loadAdmins,
   saveAdmins,
   isOwner,
@@ -1530,8 +1579,6 @@ module.exports = {
   getNumberFromJid,
   cleanNumber,
   jidToDigits,
-
-  // Bot identity
   setBotRuntimeInfo,
   isParticipantBot,
   findBotInParticipants,
