@@ -1,5 +1,20 @@
 [
   {
+    "id": "ANN-1775861119738",
+    "sender": "6287719010818",
+    "contentType": "image",
+    "contentPreview": "yooo",
+    "totalGroups": 1,
+    "successCount": 1,
+    "failCount": 0,
+    "successGroups": [
+      "Worker Web"
+    ],
+    "failedGroups": [],
+    "elapsed": "3.3",
+    "createdAt": "2026-04-10T22:45:19.738Z"
+  },
+  {
     "id": "ANN-1775857720194",
     "sender": "6287719010818",
     "contentType": "text",
