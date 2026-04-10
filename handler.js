@@ -96,8 +96,19 @@ async function handleMessage(sock, msg) {
       `${text || "[non-text]"}`,
   );
 
-  // ── Handle non-text ──
+  // ── Handle non-text (foto, video, audio, file) ──
   if (!text) {
+    // ✅ Cek announce state DULU sebelum handler lain
+    if (announce.announceState.has(senderNumber)) {
+      const handled = await announce.handleAnnounceIncoming(
+        sock,
+        msg,
+        jid,
+        senderNumber,
+      );
+      if (handled) return;
+    }
+
     await adminBot.handleIncomingImage(sock, msg, jid, senderNumber);
     return;
   }
@@ -201,19 +212,16 @@ async function handleMessage(sock, msg) {
     return;
   }
 
-  // ── kick command ─────────────────────────
   if (text.startsWith("/kick") || text.startsWith("kick ")) {
     await adminGroup.handleKickCommand(sock, msg, jid, senderNumber);
     return;
   }
 
-  // ── add command ──────────────────────────
   if (text.startsWith("/add ") || text.startsWith("add ")) {
     await adminGroup.handleAddCommand(sock, msg, jid, senderNumber, rawText);
     return;
   }
 
-  // ── Add member text input (state handler) ─
   const { addMemberState, handleAddMemberTextInput } = adminGroup;
   if (addMemberState.has(senderNumber)) {
     const handled = await handleAddMemberTextInput(
@@ -231,11 +239,11 @@ async function handleMessage(sock, msg) {
     text.startsWith("grppromote_") ||
     text.startsWith("grpdemote_") ||
     text.startsWith("grpnotadmin_") ||
-    text.startsWith("grpkick_") || // ← tambah
-    text.startsWith("grpkicklist_") || // ← tambah
-    text.startsWith("grpaddmember_") || // ← tambah
-    text === "grpadmin_add_member" || // ← tambah
-    text === "grpadmin_kick_member" || // ← tambah
+    text.startsWith("grpkick_") ||
+    text.startsWith("grpkicklist_") ||
+    text.startsWith("grpaddmember_") ||
+    text === "grpadmin_add_member" ||
+    text === "grpadmin_kick_member" ||
     text === "grpadmin_banner"
   ) {
     await adminGroup.handleGroupAdminRouter(
@@ -287,7 +295,6 @@ async function handleMessage(sock, msg) {
         const storeContacts = sock.store?.contacts || {};
         const totalContacts = Object.keys(storeContacts).length;
 
-        // Ambil sample contacts yang punya .lid
         const contactsWithLid = Object.entries(storeContacts)
           .filter(([, c]) => c?.lid)
           .slice(0, 10);
@@ -299,7 +306,6 @@ async function handleMessage(sock, msg) {
                 .join("")
             : "\n_tidak ada_";
 
-        // Group participants
         let groupInfo = "_bukan group_";
         if (isGroupChat(jid)) {
           try {
@@ -318,14 +324,12 @@ async function handleMessage(sock, msg) {
           }
         }
 
-        // LID map entries
         const lidEntries = getLidMapEntries().slice(0, 15);
         const lidInfo =
           lidEntries.length > 0
             ? lidEntries.map(([k, v]) => `\n• ${k} → ${v}`).join("")
             : "\n_kosong_";
 
-        // msg.key full dump
         const keyDump = JSON.stringify(msg.key, null, 2).substring(0, 300);
 
         await sock.sendMessage(jid, {
@@ -434,7 +438,9 @@ async function handleMessage(sock, msg) {
         await pemesanan.handleOrderHistory(sock, jid, senderNumber);
         break;
 
-      // ── Di switch case ──
+      // ======================================
+      // 📢 ANNOUNCE / BROADCAST
+      // ======================================
       case "announce":
       case "/announce":
       case "/broadcast":
