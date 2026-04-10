@@ -342,9 +342,31 @@ async function startBot() {
       qrcode.generate(qr, { small: true });
     }
 
+    // Di index.js — dalam event connection.update "open"
+    // Tambahkan setelah: botStatus.connected = true;
+
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
+
+      // ✅ Cache bot identity untuk group admin detection
+      const { setBotLidCache, setBotPhoneCache } = require("./handler_admin");
+
+      const userId = sock.user?.id || "";
+      const userLid = sock.user?.lid || "";
+
+      setBotPhoneCache(userId);
+      if (userLid) setBotLidCache(userLid);
+
+      console.log(`🤖 Bot ID: ${userId}`);
+      console.log(`🔑 Bot LID: ${userLid || "tidak tersedia"}`);
+
+      // ✅ Juga listen group-participants-update untuk update LID cache
+      sock.ev.on("group-participants.update", async (update) => {
+        // Jika bot di-promote/demote, clear cache agar re-detect
+        console.log(`👥 Group participants update: ${JSON.stringify(update)}`);
+      });
+
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   ✅ BOT + PAKASIR QRIS READY!       ║");
       console.log("╚══════════════════════════════════════╝\n");
