@@ -38,6 +38,12 @@ function getAdminBotMenuSection(senderNumber) {
     highlight_label: "Admin Only",
     rows: [
       {
+        header: "📢",
+        title: "Broadcast Group",
+        description: "Kirim announce ke beberapa group",
+        id: "announce_start",
+      },
+      {
         header: "📋",
         title: "Daftar Admin Bot",
         description: "Lihat semua admin bot",

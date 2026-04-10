@@ -6,6 +6,7 @@ const config = require("./config");
 const fs = require("fs");
 const path = require("path");
 
+const announce = require("./handler_groupannounce");
 const pemesanan = require("./handler_pemesanan");
 const owner = require("./handler_owner");
 const adminBot = require("./handler_admin");
@@ -105,6 +106,16 @@ async function handleMessage(sock, msg) {
   // PARAMETERIZED COMMANDS
   // ==========================================
 
+  if (announce.announceState.has(senderNumber)) {
+    const handled = await announce.handleAnnounceIncoming(
+      sock,
+      msg,
+      jid,
+      senderNumber,
+    );
+    if (handled) return;
+  }
+
   if (text.startsWith("/addadmin ") || text.startsWith("addadmin ")) {
     if (isOwner(senderNumber)) {
       await owner.handleOwnerAddAdmin(sock, msg, jid, senderNumber, rawText);
@@ -134,6 +145,23 @@ async function handleMessage(sock, msg) {
 
   if (text.startsWith("adminbot_deladmin_")) {
     await adminBot.handleAdminBotDelFromList(sock, jid, senderNumber, text);
+    return;
+  }
+
+  if (
+    text === "announce_start" ||
+    text === "announce_select_all" ||
+    text === "announce_deselect_all" ||
+    text === "announce_need_select" ||
+    text === "announce_next_compose" ||
+    text === "announce_recompose" ||
+    text === "announce_reselect" ||
+    text === "announce_send" ||
+    text === "announce_cancel" ||
+    text === "announce_history" ||
+    text.startsWith("announce_toggle_")
+  ) {
+    await announce.handleAnnounceRouter(sock, msg, jid, senderNumber, text);
     return;
   }
 
@@ -404,6 +432,26 @@ async function handleMessage(sock, msg) {
       case "/history":
       case "menu_riwayat":
         await pemesanan.handleOrderHistory(sock, jid, senderNumber);
+        break;
+
+      // ── Di switch case ──
+      case "announce":
+      case "/announce":
+      case "/broadcast":
+      case "broadcast":
+        if (isOwner(senderNumber) || isAdminBot(senderNumber)) {
+          await announce.handleAnnounceStart(sock, jid, senderNumber);
+        } else {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+        }
+        break;
+
+      case "announce_history":
+        if (isOwner(senderNumber) || isAdminBot(senderNumber)) {
+          await announce.handleAnnounceHistory(sock, jid, senderNumber);
+        } else {
+          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+        }
         break;
 
       // ======================================

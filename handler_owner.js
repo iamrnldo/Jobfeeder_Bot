@@ -77,6 +77,12 @@ function getOwnerMenuSection() {
     highlight_label: "Owner Only",
     rows: [
       {
+        header: "📢",
+        title: "Broadcast Group",
+        description: "Kirim announce ke beberapa group",
+        id: "announce_start",
+      },
+      {
         header: "👥",
         title: "Manajemen Admin Bot",
         description: `Tambah/Hapus/Lihat admin (${admins.length})`,

@@ -8,6 +8,8 @@ module.exports = {
   botName: "JobFeeder",
   version: "2.0.0",
 
+
+
   // ============ PAKASIR QRIS ============
   pakasir: {
     baseUrl: "https://app.pakasir.com",
