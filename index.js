@@ -17,13 +17,15 @@ const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 const http = require("http");
 
+// index.js — bagian import (ganti yang lama)
+
 const { handleMessage } = require("./handler");
-const {
-  notifyPaymentSuccess,
-  notifyPaymentFailed,
-} = require("./handler_pemesanan");
+const { notifyPaymentSuccess, notifyPaymentFailed } = require("./handler_pemesanan");
 const config = require("./config");
 const pakasir = require("./pakasir");
+
+// ✅ Import setBotRuntimeInfo dari file baru
+const { setBotRuntimeInfo } = require("./handler_admin_group");
 
 // ==========================================
 // KONFIGURASI
@@ -349,8 +351,7 @@ async function startBot() {
       botStatus.connected = true;
       activeSock = sock;
 
-      // ✅ Cache bot identity untuk deteksi di group
-      const { setBotRuntimeInfo } = require("./handler_admin");
+      // ✅ Set runtime info dari handler_admin_group
       setBotRuntimeInfo(sock);
 
       console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
