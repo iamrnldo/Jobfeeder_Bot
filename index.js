@@ -384,6 +384,34 @@ async function startBot() {
     if (type !== "notify") return;
     for (const msg of messages) {
       botStatus.messageCount++;
+      sock.ev.on("messages.upsert", async ({ messages, type }) => {
+        if (type !== "notify") return;
+        for (const msg of messages) {
+          // ✅ Build LID→Phone mapping dari setiap pesan masuk
+          // Setiap pesan mengandung info sender yang bisa kita pakai
+          try {
+            const { registerLidPhoneMapping } = require("./handler_admin");
+            const senderJid = msg.key.participant || msg.key.remoteJid;
+            const senderLid = msg.key.participantLid || null;
+
+            // Jika ada LID dan phone dari pesan yang sama
+            if (senderLid && senderJid) {
+              registerLidPhoneMapping(senderLid, senderJid);
+            }
+
+            // Cek dari pushName dan lid di message
+            if (msg.message?.extendedTextMessage?.contextInfo) {
+              const ctx = msg.message.extendedTextMessage.contextInfo;
+              if (ctx.participant && ctx.participantLid) {
+                registerLidPhoneMapping(ctx.participantLid, ctx.participant);
+              }
+            }
+          } catch (e) {}
+
+          botStatus.messageCount++;
+          await handleMessage(sock, msg);
+        }
+      });
       await handleMessage(sock, msg);
     }
   });
