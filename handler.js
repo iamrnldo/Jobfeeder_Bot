@@ -1,1029 +1,652 @@
 // ==========================================
-//  HANDLER.JS - Main Handler
-//  Menu Utama, Fitur Message, Informasi
+//  HANDLER_ADMIN.JS
+//  Khusus: Admin Bot Panel
 // ==========================================
 
-const config = require("./config");
 const fs = require("fs");
 const path = require("path");
+const {
+  loadAdmins,
+  saveAdmins,
+  isOwner,
+  isAdminBot,
+  isAdminOrOwner,
+  normalizeNumber,
+  jidToDigits,
+  getNumberFromJid,
+  cleanNumber,
+  resolveJidToPhone, // ✅ Import fungsi resolve LID
+} = require("./handler_owner");
 
-// ==========================================
-// IMPORT SUB-HANDLERS
-// ==========================================
-const pemesanan = require("./handler_pemesanan");
-const owner = require("./handler_owner");
-const adminBot = require("./handler_admin");
-const adminGroup = require("./handler_admin_group");
-
-// ==========================================
-// PATH BANNER
-// ==========================================
 const BANNER_PATH = path.join(__dirname, "images", "menu", "banner_menu.jpg");
+const BANNER_DIR = path.join(__dirname, "images", "menu");
 
 // ==========================================
-// HELPERS
+// STATE MAPS
 // ==========================================
-function isGroupChat(jid) {
-  return jid.endsWith("@g.us");
-}
+const bannerEditState = new Map();
 
-// ✅ FIX UTAMA: Ekstrak nomor bersih dari JID
-// Handle format:
-//   "628xxx@s.whatsapp.net"        → "628xxx"
-//   "628xxx:12@s.whatsapp.net"     → "628xxx"  ← ini yang bug
-//   "180762842239208:20@lid"       → "180762842239208"
-//   "180762842239208@s.whatsapp.net" → "180762842239208"
-function getNumberFromJid(jid) {
-  if (!jid) return "";
-  // Split @, ambil bagian kiri, lalu split : ambil bagian pertama
-  return jid.split("@")[0].split(":")[0];
-}
-
-// ==========================================
-// EXTRACT TEXT DARI BERBAGAI FORMAT PESAN
-// ==========================================
-function extractText(msg) {
-  const m = msg.message;
-  if (!m) return "";
-  if (m.conversation) return m.conversation;
-  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
-  if (m.buttonsResponseMessage?.selectedButtonId)
-    return m.buttonsResponseMessage.selectedButtonId;
-  if (m.listResponseMessage?.singleSelectReply?.selectedRowId)
-    return m.listResponseMessage.singleSelectReply.selectedRowId;
-  if (m.templateButtonReplyMessage?.selectedId)
-    return m.templateButtonReplyMessage.selectedId;
-  if (m.interactiveResponseMessage) {
-    try {
-      const body =
-        m.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson;
-      if (body) return JSON.parse(body).id || "";
-    } catch (e) {}
-  }
-  return "";
-}
-
-// ==========================================
-// CEK BOT DI-MENTION
-// ==========================================
-function checkBotMentioned(msg, botNumber) {
-  const m = msg.message;
-  if (!m) return false;
-  const mentions = m.extendedTextMessage?.contextInfo?.mentionedJid || [];
-  if (mentions.some((j) => j.startsWith(botNumber))) return true;
-  const t = m.conversation || m.extendedTextMessage?.text || "";
-  return t.includes(`@${botNumber}`);
-}
-
-// ==========================================
-// CEK DYNAMIC CONFIRM PATTERN
-// ==========================================
-function isDynamicConfirm(text) {
-  return text.startsWith("confirm_");
-}
-
-// ==========================================
-// ROLE HELPERS
-// ==========================================
-function isOwner(number) {
-  return owner.isOwner(number);
-}
-
-function isAdminBot(number) {
-  return owner.isAdminBot(number);
-}
-
-async function canAccessGroupManager(sock, number) {
-  return adminGroup.canAccessGroupManager(sock, number);
-}
-
-// ==========================================
-// HANDLER UTAMA
-// ==========================================
-async function handleMessage(sock, msg) {
-  if (msg.key.fromMe) return;
-
-  const jid = msg.key.remoteJid;
-  const sender = msg.pushName || "Unknown";
-  const botId = sock.user?.id?.replace(/:.*@/, "@") || "";
-  const botNumber = botId.split("@")[0];
-
-  // ✅ FIX: pakai getNumberFromJid yang sudah handle ":device" suffix
-  const rawParticipant = msg.key.participant || msg.key.remoteJid;
-  const senderNumber = getNumberFromJid(rawParticipant);
-
-  let text = extractText(msg);
-  let rawText = text.trim();
-  text = text.toLowerCase().trim();
-
-  const isBotMentioned = checkBotMentioned(msg, botNumber);
-
-  // ✅ Debug log — tampilkan senderNumber hasil parse
-  console.log(
-    `📩 [${isGroupChat(jid) ? "GROUP" : "PRIVATE"}] ` +
-      `${sender} (raw:${rawParticipant} → num:${senderNumber}): ` +
-      `${text || "[non-text]"}`,
-  );
-
-  // ==========================================
-  // HANDLE NON-TEXT
-  // ==========================================
-  if (!text) {
-    await adminBot.handleIncomingImage(sock, msg, jid, senderNumber);
-    return;
-  }
-
-  // ==========================================
-  // PARAMETERIZED COMMANDS
-  // ==========================================
-
-  // ── addadmin ────────────────────────────
-  if (text.startsWith("/addadmin ") || text.startsWith("addadmin ")) {
-    if (isOwner(senderNumber)) {
-      await owner.handleOwnerAddAdmin(sock, msg, jid, senderNumber, rawText);
-    } else if (isAdminBot(senderNumber)) {
-      await adminBot.handleAdminBotAdd(sock, msg, jid, senderNumber, rawText);
-    } else {
-      await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-    }
-    return;
-  }
-
-  // ── deladmin ────────────────────────────
-  if (text.startsWith("/deladmin ") || text.startsWith("deladmin ")) {
-    if (isOwner(senderNumber)) {
-      await owner.handleOwnerDelAdmin(sock, jid, senderNumber, rawText);
-    } else if (isAdminBot(senderNumber)) {
-      await adminBot.handleAdminBotDel(sock, jid, senderNumber, rawText);
-    } else {
-      await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-    }
-    return;
-  }
-
-  // ── Owner: hapus admin dari list ────────
-  if (text.startsWith("owner_deladmin_")) {
-    await owner.handleOwnerDelAdminFromList(sock, jid, senderNumber, text);
-    return;
-  }
-
-  // ── Admin Bot: hapus admin dari list ────
-  if (text.startsWith("adminbot_deladmin_")) {
-    await adminBot.handleAdminBotDelFromList(sock, jid, senderNumber, text);
-    return;
-  }
-
-  // ── Owner router ─────────────────────────
-  if (
-    text === "owner_manage_admin" ||
-    text === "owner_add_admin" ||
-    text === "owner_list_admin" ||
-    text === "owner_del_admin" ||
-    text === "owner_orders" ||
-    text === "owner_group_manager" ||
-    text === "owner_banner" ||
-    text === "owner_stats"
-  ) {
-    await owner.handleOwnerRouter(sock, msg, jid, senderNumber, text);
-    return;
-  }
-
-  // ── Admin Bot router ─────────────────────
-  if (
-    text === "adminbot_list" ||
-    text === "adminbot_add" ||
-    text === "adminbot_del" ||
-    text === "adminbot_orders" ||
-    text === "adminbot_banner" ||
-    text.startsWith("adminbot_")
-  ) {
-    await adminBot.handleAdminBotRouter(sock, msg, jid, senderNumber, text);
-    return;
-  }
-
-  // ── Group commands ───────────────────────
-  if (text.startsWith("/promote") || text.startsWith("promote ")) {
-    await adminGroup.handlePromoteCommand(sock, msg, jid, senderNumber);
-    return;
-  }
-
-  if (text.startsWith("/demote") || text.startsWith("demote ")) {
-    await adminGroup.handleDemoteCommand(sock, msg, jid, senderNumber);
-    return;
-  }
-
-  // ── Group admin router ───────────────────
-  if (
-    text.startsWith("grpselect_") ||
-    text.startsWith("grppromote_") ||
-    text.startsWith("grpdemote_") ||
-    text.startsWith("grpnotadmin_") ||
-    text === "grpadmin_banner"
-  ) {
-    await adminGroup.handleGroupAdminRouter(
-      sock,
-      msg,
-      jid,
-      senderNumber,
-      rawText,
-    );
-    return;
-  }
-
-  // ── Dynamic confirm ──────────────────────
-  if (isDynamicConfirm(text)) {
-    const fullServiceId = text.replace("confirm_", "");
-    console.log(`💳 Dynamic confirm: "${fullServiceId}"`);
-    await pemesanan.handleConfirmPayment(
-      sock,
-      jid,
-      sender,
-      senderNumber,
-      fullServiceId,
-    );
-    return;
-  }
-
-  // ==========================================
-  // ROUTING COMMAND
-  // ==========================================
-  try {
-    switch (text) {
-      // ======================================
-      // 🏠 MENU UTAMA
-      // ======================================
-      case "menu":
-      case "/menu":
-      case "help":
-      case "/help":
-      case "menu_back":
-        await sendMainMenu(sock, msg, jid, sender, senderNumber);
-        break;
-
-      // ======================================
-      // 💼 JASA PEMESANAN
-      // ======================================
-      case "jasa":
-      case "/jasa":
-      case "website":
-      case "/website":
-      case "menu_jasa":
-      case "kategori_website":
-        await pemesanan.sendServiceMenu(sock, jid, sender);
-        break;
-
-      case "kategori_botwa":
-      case "menu_botwa":
-        await pemesanan.sendBotWaMenu(sock, jid, sender);
-        break;
-
-      case "service_testing":
-        await pemesanan.sendServiceDetail(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "testing",
-        );
-        break;
-      case "service_landing":
-        await pemesanan.sendServiceDetail(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "landing",
-        );
-        break;
-      case "service_custom":
-        await pemesanan.sendServiceDetail(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "custom",
-        );
-        break;
-      case "service_premium":
-        await pemesanan.sendServiceDetail(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "premium",
-        );
-        break;
-      case "service_bot_button":
-        await pemesanan.sendBotWaDetail(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_button",
-        );
-        break;
-      case "service_bot_text":
-        await pemesanan.sendBotWaDetail(
-          sock,
-          jid,
-          sender,
-          senderNumber,
-          "bot_text",
-        );
-        break;
-
-      case "batalkan_pesanan":
-      case "cancel_order":
-        await pemesanan.handleCancelOrder(sock, jid, senderNumber);
-        break;
-
-      case "cek":
-      case "/cek":
-      case "cekbayar":
-      case "/cekbayar":
-      case "menu_cek_bayar":
-        await pemesanan.handleCheckPayment(sock, jid, senderNumber);
-        break;
-
-      case "riwayat":
-      case "/riwayat":
-      case "history":
-      case "/history":
-      case "menu_riwayat":
-        await pemesanan.handleOrderHistory(sock, jid, senderNumber);
-        break;
-
-      // ======================================
-      // 👑 OWNER PANEL
-      // ======================================
-      case "owner":
-      case "/owner":
-      case "panel_owner": {
-        if (!isOwner(senderNumber)) {
-          await sock.sendMessage(jid, {
-            text: "⛔ *AKSES DITOLAK*\n\nHanya Owner yang bisa akses panel ini.",
-          });
-          break;
-        }
-        await sendMainMenu(sock, msg, jid, sender, senderNumber);
-        break;
-      }
-
-      // ======================================
-      // 🛡️ ADMIN BOT PANEL
-      // ======================================
-      case "admin":
-      case "/admin":
-      case "panel_admin": {
-        if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
-          await sock.sendMessage(jid, {
-            text: "⛔ *AKSES DITOLAK*\n\nHanya Admin Bot yang bisa akses panel ini.",
-          });
-          break;
-        }
-        await sendMainMenu(sock, msg, jid, sender, senderNumber);
-        break;
-      }
-
-      // ── Tambah admin ─────────────────────
-      case "admin_add":
-      case "adminbot_add": {
-        if (isOwner(senderNumber)) {
-          await sock.sendMessage(jid, {
-            text:
-              `➕ *TAMBAH ADMIN BOT*\n\n` +
-              `Ketik:\n\`\`\`/addadmin 628xxxxxxxxxx\`\`\``,
-          });
-        } else if (isAdminBot(senderNumber)) {
-          await adminBot.handleAdminBotRouter(
-            sock,
-            msg,
-            jid,
-            senderNumber,
-            "adminbot_add",
-          );
-        } else {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-        }
-        break;
-      }
-
-      // ── Hapus admin ──────────────────────
-      case "admin_del":
-      case "adminbot_del": {
-        if (isOwner(senderNumber)) {
-          await owner.handleOwnerRouter(
-            sock,
-            msg,
-            jid,
-            senderNumber,
-            "owner_del_admin",
-          );
-        } else if (isAdminBot(senderNumber)) {
-          await adminBot.handleAdminBotRouter(
-            sock,
-            msg,
-            jid,
-            senderNumber,
-            "adminbot_del",
-          );
-        } else {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-        }
-        break;
-      }
-
-      // ── List admin ───────────────────────
-      case "admin_list":
-      case "adminbot_list":
-      case "/listadmin":
-      case "listadmin": {
-        if (isOwner(senderNumber)) {
-          await owner.handleOwnerListAdmin(sock, jid, senderNumber);
-        } else if (isAdminBot(senderNumber)) {
-          await adminBot.handleAdminBotList(sock, jid, senderNumber);
-        } else {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-        }
-        break;
-      }
-
-      // ── Daftar order ─────────────────────
-      case "admin_orders":
-      case "adminbot_orders":
-      case "/listorder":
-      case "listorder": {
-        if (isOwner(senderNumber)) {
-          await owner.handleOwnerListOrders(sock, jid, senderNumber);
-        } else if (isAdminBot(senderNumber)) {
-          await adminBot.handleAdminBotOrders(sock, jid, senderNumber);
-        } else {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-        }
-        break;
-      }
-
-      // ======================================
-      // 🖼️ EDIT BANNER
-      // Owner + Admin Bot + Admin Group WA
-      // ======================================
-      case "admin_banner":
-      case "adminbot_banner":
-      case "grpadmin_banner":
-      case "owner_banner":
-      case "edit_banner": {
-        const canEdit =
-          isOwner(senderNumber) ||
-          isAdminBot(senderNumber) ||
-          (await adminGroup.canAccessGroupManager(sock, senderNumber));
-
-        if (!canEdit) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await adminBot.handleEditBanner(sock, jid, senderNumber);
-        break;
-      }
-
-      // ======================================
-      // 👥 GROUP ADMIN MANAGER
-      // Owner + Admin Bot + Admin Group WA
-      // ======================================
-      case "admin_group":
-      case "group_manager": {
-        const hasAccess = await adminGroup.canAccessGroupManager(
-          sock,
-          senderNumber,
-        );
-        if (!hasAccess) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await adminGroup.handleGroupManager(sock, jid, senderNumber);
-        break;
-      }
-
-      case "grpadmin_promote": {
-        const hasAccess = await adminGroup.canAccessGroupManager(
-          sock,
-          senderNumber,
-        );
-        if (!hasAccess) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await adminGroup.handleGroupSelectForAction(
-          sock,
-          jid,
-          senderNumber,
-          "promote",
-        );
-        break;
-      }
-
-      case "grpadmin_demote": {
-        const hasAccess = await adminGroup.canAccessGroupManager(
-          sock,
-          senderNumber,
-        );
-        if (!hasAccess) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await adminGroup.handleGroupSelectForAction(
-          sock,
-          jid,
-          senderNumber,
-          "demote",
-        );
-        break;
-      }
-
-      case "grpadmin_view": {
-        const hasAccess = await adminGroup.canAccessGroupManager(
-          sock,
-          senderNumber,
-        );
-        if (!hasAccess) {
-          await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-          break;
-        }
-        await adminGroup.handleGroupSelectForAction(
-          sock,
-          jid,
-          senderNumber,
-          "view",
-        );
-        break;
-      }
-
-      // ======================================
-      // 📨 DEMO FITUR MESSAGE
-      // ======================================
-      case "button":
-      case "/button":
-      case "menu_button":
-        await sendButtonMessage(sock, jid);
-        break;
-
-      case "list":
-      case "/list":
-      case "menu_list":
-        await sendListMessage(sock, jid);
-        break;
-
-      case "template":
-      case "/template":
-      case "menu_template":
-        await sendTemplateButton(sock, jid);
-        break;
-
-      case "image":
-      case "/image":
-      case "menu_image":
-        await sendImageWithButton(sock, jid);
-        break;
-
-      // ======================================
-      // ℹ️ INFORMASI
-      // ======================================
-      case "menu_info":
-        await sock.sendMessage(jid, {
-          text:
-            `📌 *INFO BOT*\n\n` +
-            `• *Nama:* ${config.botName}\n` +
-            `• *Version:* ${config.version}\n` +
-            `• *Library:* atexovi-baileys\n` +
-            `• *Payment:* Pakasir QRIS\n` +
-            `• *Runtime:* Node.js`,
-        });
-        break;
-
-      case "menu_ping": {
-        const ps = Date.now();
-        await sock.sendMessage(jid, {
-          text: `🏓 *PONG!*\nSpeed: ${Date.now() - ps}ms\nStatus: Online ✅`,
-        });
-        break;
-      }
-
-      case "menu_creator":
-        await sock.sendMessage(jid, {
-          text: `👨‍💻 *CREATOR*\n\nGitHub: https://github.com/iamrnldo`,
-        });
-        break;
-
-      case "btn_info":
-        await sock.sendMessage(jid, {
-          text: `📌 *INFO BOT*\n\nBot WA + Pakasir QRIS Payment`,
-        });
-        break;
-
-      case "btn_creator":
-        await sock.sendMessage(jid, {
-          text: `👨‍💻 *CREATOR*\n\nGitHub: https://github.com/iamrnldo`,
-        });
-        break;
-
-      case "btn_ping": {
-        const s = Date.now();
-        await sock.sendMessage(jid, {
-          text: `🏓 Pong! Speed: ${Date.now() - s}ms`,
-        });
-        break;
-      }
-
-      case "list_games":
-        await sock.sendMessage(jid, { text: `🎮 *GAMES*\n\n_Coming Soon!_` });
-        break;
-
-      case "list_tools":
-        await sock.sendMessage(jid, { text: `🔧 *TOOLS*\n\n_Coming Soon!_` });
-        break;
-
-      case "list_downloader":
-        await sock.sendMessage(jid, {
-          text: `📥 *DOWNLOADER*\n\n_Coming Soon!_`,
-        });
-        break;
-
-      case "list_info":
-        await sock.sendMessage(jid, {
-          text: `📋 *INFO*\n\nVersion: ${config.version}\nPayment: Pakasir QRIS`,
-        });
-        break;
-
-      // ======================================
-      // DEFAULT
-      // ======================================
-      default:
-        if (isBotMentioned) {
-          await sock.sendMessage(jid, {
-            text:
-              `👋 Halo *${sender}*!\n\n` +
-              `Ketik *menu* untuk daftar perintah.\n` +
-              `Ketik *jasa* untuk layanan website.`,
-          });
-        }
-        break;
-    }
-  } catch (error) {
-    console.error("❗ Error handling message:", error);
-    try {
-      const { numberToJid } = require("./handler_pemesanan");
-      await sock.sendMessage(numberToJid(config.ownerNumber), {
-        text:
-          `⚠️ *ERROR HANDLER*\n\n` +
-          `📩 Text: ${text}\n` +
-          `👤 From: ${senderNumber}\n` +
-          `❗ Error: ${error.message}\n` +
-          `📋 Stack: ${error.stack?.substring(0, 300)}`,
-      });
-    } catch (e) {}
+function ensureBannerDir() {
+  if (!fs.existsSync(BANNER_DIR)) {
+    fs.mkdirSync(BANNER_DIR, { recursive: true });
   }
 }
 
 // ==========================================
-// ⭐ MENU UTAMA
+// ADMIN BOT PANEL MENU
 // ==========================================
-async function sendMainMenu(sock, msg, jid, sender, senderNumber) {
-  const hasTestingService = config.services?.some((s) => s.id === "testing");
+function getAdminBotMenuSection(senderNumber) {
+  const bannerExists = fs.existsSync(BANNER_PATH);
+  const admins = loadAdmins().filter((a) => !isOwner(a));
 
-  const sections = [];
+  return {
+    title: "🛡️ Panel Admin Bot",
+    highlight_label: "Admin Only",
+    rows: [
+      {
+        header: "📋",
+        title: "Daftar Admin Bot",
+        description: "Lihat semua admin bot terdaftar",
+        id: "adminbot_list",
+      },
+      {
+        header: "➕",
+        title: "Tambah Admin Bot",
+        description: "Tambah admin bot baru (sesama admin)",
+        id: "adminbot_add",
+      },
+      {
+        header: "➖",
+        title: "Hapus Admin Bot",
+        description: `Hapus admin sesama (${admins.length} admin)`,
+        id: "adminbot_del",
+      },
+      {
+        header: "📦",
+        title: "Daftar Pesanan",
+        description: "Lihat semua order masuk",
+        id: "adminbot_orders",
+      },
+      {
+        header: "🖼️",
+        title: "Edit Banner Menu",
+        description: bannerExists
+          ? "Ganti banner (sudah ada)"
+          : "Upload banner (belum ada)",
+        id: "adminbot_banner",
+      },
+    ],
+  };
+}
 
-  if (hasTestingService) {
-    sections.push({
-      title: "🧪 Testing Payment",
-      highlight_label: "⚠️ DEV",
-      rows: [
-        {
-          header: "🧪 Rp 5",
-          title: "⚠️ Testing Payment",
-          description: "Test pembayaran QRIS — Rp 5 saja",
-          id: "service_testing",
-        },
-      ],
+// ==========================================
+// ADMIN BOT: LIHAT DAFTAR ADMIN
+// ==========================================
+async function handleAdminBotList(sock, jid, senderNumber) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const config = require("./config");
+  const admins = loadAdmins();
+
+  let text =
+    `╔══════════════════════════╗\n` +
+    `║  📋 *DAFTAR ADMIN BOT*   ║\n` +
+    `╚══════��═══════════════════╝\n\n` +
+    `👑 *OWNER:*\n` +
+    `└ 📱 +${config.ownerNumber}\n\n` +
+    `🛡️ *ADMIN BOT (${admins.length}):*\n`;
+
+  if (admins.length === 0) {
+    text += `└ _Belum ada admin_\n`;
+  } else {
+    admins.forEach((a, i) => {
+      const isSelf = normalizeNumber(a) === normalizeNumber(senderNumber);
+      const prefix = i === admins.length - 1 ? "└" : "├";
+      text += `${prefix} 📱 +${a}${isSelf ? " _(kamu)_" : ""}\n`;
     });
   }
 
-  sections.push(
-    {
-      title: "🛒 Pemesanan Jasa",
-      highlight_label: "🔥 Tersedia",
-      rows: [
-        {
-          header: "💼 Website",
-          title: "Jasa Pembuatan Website",
-          description: "Landing Page, Custom, Premium Web",
-          id: "kategori_website",
-        },
-        {
-          header: "🤖 Bot WA",
-          title: "Jasa Pembuatan Bot WA",
-          description: "Bot Button / Text + Addon QRIS & Image",
-          id: "kategori_botwa",
-        },
-      ],
-    },
-    {
-      title: "💳 Pembayaran",
-      rows: [
-        {
-          header: "🔍 Status",
-          title: "Cek Pembayaran",
-          description: "Cek status pembayaran aktif",
-          id: "menu_cek_bayar",
-        },
-        {
-          header: "📋 History",
-          title: "Riwayat Pesanan",
-          description: "Lihat riwayat pesanan",
-          id: "menu_riwayat",
-        },
-      ],
-    },
-    {
-      title: "📨 Fitur Message",
-      highlight_label: "Demo",
-      rows: [
-        {
-          header: "🔘",
-          title: "Button Message",
-          description: "Tombol interaktif",
-          id: "menu_button",
-        },
-        {
-          header: "📋",
-          title: "List Message",
-          description: "Daftar pilihan",
-          id: "menu_list",
-        },
-        {
-          header: "📎",
-          title: "Template Button",
-          description: "URL, Call, Quick Reply",
-          id: "menu_template",
-        },
-        {
-          header: "🖼️",
-          title: "Image + Button",
-          description: "Gambar + tombol",
-          id: "menu_image",
-        },
-      ],
-    },
-    {
-      title: "ℹ️ Informasi",
-      rows: [
-        {
-          header: "📌",
-          title: "Info Bot",
-          description: "Info lengkap bot",
-          id: "menu_info",
-        },
-        {
-          header: "👨‍💻",
-          title: "Creator",
-          description: "Pembuat bot",
-          id: "menu_creator",
-        },
-        {
-          header: "🏓",
-          title: "Speed Test",
-          description: "Cek response bot",
-          id: "menu_ping",
-        },
-      ],
-    },
-  );
+  text += `\n📊 Total: ${admins.length + 1} (termasuk owner)`;
+  await sock.sendMessage(jid, { text });
+}
 
-  // ==========================================
-  // ✅ CEK ROLE — async untuk group check
-  // ==========================================
-  const _isOwner = isOwner(senderNumber);
-  const _isAdminBot = isAdminBot(senderNumber);
-
-  // Cek admin group hanya jika bukan owner/adminbot
-  // (hemat API call)
-  let _isGroupAdmin = false;
-  if (!_isOwner && !_isAdminBot) {
-    _isGroupAdmin = await adminGroup.canAccessGroupManager(sock, senderNumber);
+// ==========================================
+// ✅ ADMIN BOT: TAMBAH ADMIN BOT
+// Support: mention + manual number
+// Mention di-resolve dari LID → nomor HP
+// ==========================================
+async function handleAdminBotAdd(
+  sock,
+  msg,
+  jid,
+  senderNumber,
+  rawText,
+  store = null,
+) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
   }
 
-  // ✅ Owner Panel
-  if (_isOwner) {
-    sections.push(owner.getOwnerMenuSection());
+  let target = "";
+  let resolveMethod = "manual";
+
+  const mentions =
+    msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+
+  if (mentions.length > 0) {
+    // ✅ Ada mention — resolve JID/LID ke nomor HP
+    const mentionJid = mentions[0];
+    console.log(`🔍 Admin addadmin via mention, raw JID: ${mentionJid}`);
+
+    target = await resolveJidToPhone(mentionJid, sock, store);
+    target = normalizeNumber(target);
+    resolveMethod = "mention";
+
+    console.log(`✅ Mention resolved: ${mentionJid} → ${target}`);
+
+    // Validasi hasil resolve
+    if (!target || target.length < 10 || !target.startsWith("62")) {
+      await sock.sendMessage(jid, {
+        text:
+          `❌ *Gagal mendapatkan nomor dari mention*\n\n` +
+          `Nomor terdeteksi: \`${target || "kosong"}\`\n\n` +
+          `Kemungkinan penyebab:\n` +
+          `• Kontak tidak tersimpan di WA\n` +
+          `• Gunakan cara manual: \`/addadmin 628xxxxxxxxxx\``,
+      });
+      return;
+    }
+  } else {
+    // Input manual
+    const parts = rawText.split(/\s+/);
+    if (parts.length >= 2) {
+      target = normalizeNumber(parts[1]);
+    }
   }
 
-  // ✅ Admin Bot Panel (bukan owner)
-  if (_isAdminBot && !_isOwner) {
-    sections.push(adminBot.getAdminBotMenuSection(senderNumber));
+  if (!target || target.length < 10) {
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *Format Salah*\n\n` +
+        `Gunakan salah satu cara:\n\n` +
+        `• *Mention:* \`/addadmin @nomor\`\n` +
+        `• *Manual:* \`/addadmin 628xxxxxxxxxx\``,
+    });
+    return;
   }
 
-  // ✅ Admin Group Panel (bukan owner dan bukan admin bot)
-  if (_isGroupAdmin && !_isOwner && !_isAdminBot) {
-    sections.push(adminGroup.getAdminGroupMenuSection());
+  // ✅ Admin TIDAK bisa tambah owner sebagai admin
+  if (isOwner(target)) {
+    await sock.sendMessage(jid, {
+      text: `👑 *+${target}* adalah Owner.\n\nOwner tidak perlu ditambah sebagai admin.`,
+    });
+    return;
   }
 
-  // ==========================================
-  // ROLE TEXT
-  // ==========================================
-  const roleText = _isOwner
-    ? "👑 Owner"
-    : _isAdminBot
-      ? "🛡️ Admin Bot"
-      : _isGroupAdmin
-        ? "👥 Admin Group"
-        : "👤 User";
+  if (isAdminBot(target)) {
+    await sock.sendMessage(jid, {
+      text: `⚠️ *+${target}* sudah menjadi admin bot.`,
+    });
+    return;
+  }
 
-  // ✅ Debug log
+  const admins = loadAdmins();
+  admins.push(target);
+  saveAdmins(admins);
+
   console.log(
-    `🔐 sendMainMenu: senderNumber="${senderNumber}" ` +
-      `isOwner=${_isOwner} isAdminBot=${_isAdminBot} ` +
-      `isGroupAdmin=${_isGroupAdmin} → role="${roleText}"`,
+    `✅ [ADMIN] Admin ditambahkan: +${target} ` +
+      `(via ${resolveMethod}) oleh +${senderNumber}`,
   );
 
-  const caption =
-    `╔══════════════════════════╗\n` +
-    `║  🤖 *MENU BOT WA*        ║\n` +
-    `╚══════════════════════════╝\n\n` +
-    `Halo *${sender}*! 👋\n` +
-    `Role: *${roleText}*\n\n` +
-    `🛒 *Jasa Pemesanan Website*\n` +
-    `└ Pilih dari menu untuk lihat paket\n\n` +
-    `💳 Pembayaran via *QRIS*\n` +
-    `🔒 Pemesanan di *private chat*\n\n` +
-    `⏰ ${new Date().toLocaleString("id-ID")}\n\n` +
-    `Pilih menu di bawah 👇`;
+  await sock.sendMessage(jid, {
+    text:
+      `✅ *ADMIN BOT DITAMBAHKAN*\n\n` +
+      `📱 Nomor: +${target}\n` +
+      `🔍 Cara: ${resolveMethod === "mention" ? "Mention @" : "Input manual"}\n` +
+      `👤 Ditambahkan oleh: +${senderNumber}\n` +
+      `📊 Total admin: ${admins.length}`,
+  });
+}
 
-  const interactivePayload = {
-    title: config.botName,
-    footer: `© 2026 ${config.botName} | Pakasir QRIS`,
+// ==========================================
+// ADMIN BOT: HAPUS ADMIN BOT (command)
+// ==========================================
+async function handleAdminBotDel(sock, jid, senderNumber, rawText) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const parts = rawText.split(/\s+/);
+  const target = parts.length >= 2 ? normalizeNumber(parts[1]) : "";
+
+  if (!target || target.length < 10) {
+    await sock.sendMessage(jid, {
+      text: "❌ Format: `/deladmin 628xxxxxxxxxx`",
+    });
+    return;
+  }
+
+  await executeAdminBotDelete(sock, jid, senderNumber, target);
+}
+
+// ==========================================
+// ADMIN BOT: HAPUS ADMIN BOT (dari list)
+// ==========================================
+async function handleAdminBotDelFromList(sock, jid, senderNumber, rawId) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const target = rawId.replace("adminbot_deladmin_", "");
+  await executeAdminBotDelete(sock, jid, senderNumber, target);
+}
+
+// ==========================================
+// EXECUTE: HAPUS ADMIN BOT
+// ==========================================
+async function executeAdminBotDelete(sock, jid, senderNumber, target) {
+  if (isOwner(target)) {
+    await sock.sendMessage(jid, {
+      text: `⛔ *TIDAK BISA MENGHAPUS OWNER*\n\nHanya Owner yang bisa mengelola dirinya sendiri.`,
+    });
+    return;
+  }
+
+  if (!isAdminBot(target)) {
+    await sock.sendMessage(jid, {
+      text: `❌ *+${target}* bukan admin bot.`,
+    });
+    return;
+  }
+
+  if (normalizeNumber(senderNumber) === normalizeNumber(target)) {
+    await sock.sendMessage(jid, {
+      text: `❌ Tidak bisa menghapus diri sendiri.\n\nMinta Owner untuk menghapus kamu.`,
+    });
+    return;
+  }
+
+  const admins = loadAdmins().filter(
+    (a) => normalizeNumber(a) !== normalizeNumber(target),
+  );
+  saveAdmins(admins);
+  console.log(`🗑️ [ADMIN] Admin dihapus: +${target} oleh +${senderNumber}`);
+
+  await sock.sendMessage(jid, {
+    text:
+      `🗑️ *ADMIN BOT DIHAPUS*\n\n` +
+      `📱 Nomor: +${target}\n` +
+      `👤 Dihapus oleh: +${senderNumber}\n` +
+      `📊 Sisa admin: ${admins.length}`,
+  });
+}
+
+// ==========================================
+// ADMIN BOT: LIST HAPUS ADMIN (pilihan)
+// ==========================================
+async function handleAdminBotDelList(sock, jid, senderNumber) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const admins = loadAdmins().filter((a) => {
+    if (isOwner(a)) return false;
+    if (normalizeNumber(a) === normalizeNumber(senderNumber)) return false;
+    return true;
+  });
+
+  if (admins.length === 0) {
+    await sock.sendMessage(jid, {
+      text:
+        `📋 *HAPUS ADMIN BOT*\n\n` +
+        `_Tidak ada admin lain yang bisa dihapus._\n\n` +
+        `Note: Kamu tidak bisa menghapus diri sendiri atau Owner.`,
+    });
+    return;
+  }
+
+  const rows = admins.map((a, i) => ({
+    header: `Admin #${i + 1}`,
+    title: `+${a}`,
+    description: `Hapus +${a} dari daftar admin`,
+    id: `adminbot_deladmin_${a}`,
+  }));
+
+  await sock.sendMessage(jid, {
+    text:
+      `🗑️ *HAPUS ADMIN BOT*\n\n` +
+      `Pilih admin yang ingin dihapus.\n` +
+      `Total tersedia: *${admins.length}*\n\n` +
+      `⚠️ Owner dan diri sendiri tidak bisa dihapus.`,
+    footer: "Admin Bot Panel",
     interactiveButtons: [
       {
         name: "single_select",
         buttonParamsJson: JSON.stringify({
-          title: "📋 Buka Menu",
-          sections,
+          title: "📋 Pilih Admin",
+          sections: [{ title: "🛡️ Admin Bot", rows }],
         }),
       },
     ],
-  };
+  });
+}
+
+// ==========================================
+// ADMIN BOT: DAFTAR PESANAN
+// ==========================================
+async function handleAdminBotOrders(sock, jid, senderNumber) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  const pakasir = require("./pakasir");
+  const orders = pakasir.getAllOrders(15);
+
+  if (orders.length === 0) {
+    await sock.sendMessage(jid, {
+      text: `📋 *DAFTAR ORDER*\n\n_Belum ada order._`,
+    });
+    return;
+  }
+
+  const all = pakasir.loadOrders();
+  const completed = all.filter((o) => o.status === "completed").length;
+  const pending = all.filter((o) => o.status === "pending").length;
+  const cancelled = all.filter((o) => o.status === "cancelled").length;
+  const revenue = all
+    .filter((o) => o.status === "completed")
+    .reduce((s, o) => s + o.amount, 0);
+
+  let text =
+    `╔══════════════════════════╗\n` +
+    `║  📋 *DAFTAR ORDER*       ║\n` +
+    `╚══════════════════════════╝\n\n` +
+    `📊 *Ringkasan:*\n` +
+    `├ ✅ Lunas: ${completed}\n` +
+    `├ ⏳ Pending: ${pending}\n` +
+    `├ 🚫 Dibatalkan: ${cancelled}\n` +
+    `├ 📦 Total: ${all.length}\n` +
+    `└ 💰 Revenue: ${pakasir.formatRupiah(revenue)}\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+
+  orders.forEach((o, i) => {
+    text +=
+      `*${i + 1}. ${o.orderId}*\n` +
+      `   💼 ${o.serviceName}\n` +
+      `   💰 ${pakasir.formatRupiah(o.amount)}\n` +
+      `   👤 ${o.buyerName} (+${o.buyerNumber})\n` +
+      `   ${pakasir.statusEmoji(o.status)} ${pakasir.statusLabel(o.status)}\n` +
+      `   📅 ${pakasir.formatDate(o.createdAt)}\n\n`;
+  });
+
+  text += `_Menampilkan ${orders.length} order terakhir_`;
+  await sock.sendMessage(jid, { text });
+}
+
+// ==========================================
+// EDIT BANNER
+// ==========================================
+async function handleEditBanner(sock, jid, senderNumber) {
+  ensureBannerDir();
+  bannerEditState.set(senderNumber, {
+    waiting: true,
+    jid,
+    timestamp: Date.now(),
+  });
 
   const bannerExists = fs.existsSync(BANNER_PATH);
+  const bannerInfo = bannerExists
+    ? (() => {
+        const stat = fs.statSync(BANNER_PATH);
+        return (
+          `📊 *Banner Saat Ini:*\n` +
+          `├ 📁 Ukuran: ${(stat.size / 1024).toFixed(1)} KB\n` +
+          `└ 🕐 Diubah: ${new Date(stat.mtime).toLocaleString("id-ID")}\n\n`
+        );
+      })()
+    : `⚠️ _Banner belum ada_\n\n`;
+
+  await sock.sendMessage(jid, {
+    text:
+      `╔══════════════════════════╗\n` +
+      `║  🖼️  *EDIT BANNER MENU*  ║\n` +
+      `╚══════════════════════════╝\n\n` +
+      `${bannerInfo}` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `📤 *Kirim gambar baru untuk mengganti banner.*\n\n` +
+      `📋 *Ketentuan:*\n` +
+      `├ Format: JPG / PNG\n` +
+      `├ Rasio ideal: 16:9 atau 4:3\n` +
+      `├ Resolusi min: 800 x 400 px\n` +
+      `└ Ukuran max: 5 MB\n\n` +
+      `⏰ _Mode edit aktif 5 menit_\n` +
+      `❌ Ketik *batal* untuk membatalkan`,
+  });
 
   if (bannerExists) {
     try {
-      const bannerBuffer = fs.readFileSync(BANNER_PATH);
       await sock.sendMessage(jid, {
-        image: bannerBuffer,
-        caption,
-        ...interactivePayload,
+        image: fs.readFileSync(BANNER_PATH),
+        caption: `📌 *Preview Banner Saat Ini*`,
       });
-      console.log(`🖼️ Menu + banner → ${senderNumber} [${roleText}]`);
-      return;
-    } catch (err) {
-      console.error(`⚠️ Banner gagal, fallback text: ${err.message}`);
+    } catch (e) {
+      console.error(`⚠️ Preview banner gagal: ${e.message}`);
     }
   }
 
-  await sock.sendMessage(jid, {
-    text: caption,
-    ...interactivePayload,
-  });
-  console.log(`📋 Menu text → ${senderNumber} [${roleText}]`);
+  setTimeout(
+    () => {
+      const state = bannerEditState.get(senderNumber);
+      if (state?.waiting) {
+        bannerEditState.delete(senderNumber);
+        sock
+          .sendMessage(jid, {
+            text: `⏰ *Mode edit banner habis waktu.*\n\nKetik *edit_banner* untuk mencoba lagi.`,
+          })
+          .catch(() => {});
+      }
+    },
+    5 * 60 * 1000,
+  );
 }
 
 // ==========================================
-// 🔘 BUTTON MESSAGE
+// PROSES GAMBAR MASUK (untuk banner)
 // ==========================================
-async function sendButtonMessage(sock, jid) {
-  await sock.sendMessage(jid, {
-    text: "🔘 *BUTTON MESSAGE*\n\nPilih tombol:",
-    footer: "👇",
-    buttons: [
-      { buttonId: "btn_info", buttonText: { displayText: "📌 Info" }, type: 1 },
-      {
-        buttonId: "btn_creator",
-        buttonText: { displayText: "👨‍💻 Creator" },
-        type: 1,
-      },
-      { buttonId: "btn_ping", buttonText: { displayText: "🏓 Ping" }, type: 1 },
-    ],
-    headerType: 1,
-  });
-}
+async function handleIncomingImage(sock, msg, jid, senderNumber) {
+  const state = bannerEditState.get(senderNumber);
+  if (!state?.waiting) return;
 
-// ==========================================
-// 📋 LIST MESSAGE
-// ==========================================
-async function sendListMessage(sock, jid) {
-  await sock.sendMessage(jid, {
-    text: "📋 *LIST MESSAGE*\n\nPilih dari daftar:",
-    footer: "© 2024",
-    title: "Menu",
-    buttonText: "📋 Lihat Menu",
-    sections: [
-      {
-        title: "🎮 Games",
-        rows: [
-          {
-            title: "🎮 Games",
-            rowId: "list_games",
-            description: "Fitur game seru",
-          },
-        ],
-      },
-      {
-        title: "🔧 Tools",
-        rows: [
-          {
-            title: "🔧 Tools",
-            rowId: "list_tools",
-            description: "Tools berguna",
-          },
-        ],
-      },
-      {
-        title: "📥 Downloader",
-        rows: [
-          {
-            title: "📥 Downloader",
-            rowId: "list_downloader",
-            description: "Download video & audio",
-          },
-        ],
-      },
-      {
-        title: "📋 Info",
-        rows: [
-          {
-            title: "📋 Info Bot",
-            rowId: "list_info",
-            description: "Informasi bot",
-          },
-        ],
-      },
-    ],
-  });
-}
+  const m = msg.message;
+  if (!m) return;
 
-// ==========================================
-// 📎 TEMPLATE BUTTON
-// ==========================================
-async function sendTemplateButton(sock, jid) {
-  await sock.sendMessage(jid, {
-    text:
-      "📎 *TEMPLATE BUTTON*\n\n" +
-      "• 🌐 URL Button\n" +
-      "• 📞 Call Button\n" +
-      "• 🔄 Quick Reply Button",
-    footer: "© 2024",
-    templateButtons: [
+  const textContent = (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    ""
+  )
+    .toLowerCase()
+    .trim();
+
+  if (textContent === "batal") {
+    bannerEditState.delete(senderNumber);
+    await sock.sendMessage(jid, {
+      text: `❌ *Edit banner dibatalkan.*`,
+    });
+    return;
+  }
+
+  const imageMsg = m.imageMessage;
+  if (!imageMsg) {
+    await sock.sendMessage(jid, {
+      text: `⚠️ *Kirim gambar (bukan teks).*\n\nKetik *batal* untuk membatalkan.`,
+    });
+    return;
+  }
+
+  console.log(`🖼️ Gambar banner dari +${senderNumber}...`);
+  bannerEditState.delete(senderNumber);
+
+  await sock.sendMessage(jid, { text: `⏳ *Menyimpan banner baru...*` });
+
+  try {
+    const { downloadMediaMessage } = require("atexovi-baileys");
+    ensureBannerDir();
+
+    if (fs.existsSync(BANNER_PATH)) {
+      const backupName = `banner_menu_backup_${Date.now()}.jpg`;
+      fs.copyFileSync(BANNER_PATH, path.join(BANNER_DIR, backupName));
+    }
+
+    const buffer = await downloadMediaMessage(
+      msg,
+      "buffer",
+      {},
       {
-        index: 1,
-        urlButton: {
-          displayText: "🌐 GitHub",
-          url: "https://github.com/atex-ovi/atexovi-baileys",
+        logger: {
+          info: () => {},
+          error: console.error,
+          warn: () => {},
+          debug: () => {},
+          trace: () => {},
+          child: () => ({
+            info: () => {},
+            error: console.error,
+            warn: () => {},
+            debug: () => {},
+            trace: () => {},
+          }),
         },
+        reuploadRequest: sock.updateMediaMessage,
       },
-      {
-        index: 2,
-        callButton: {
-          displayText: "📞 Call",
-          phoneNumber: "+6281234567890",
-        },
-      },
-      {
-        index: 3,
-        quickReplyButton: {
-          displayText: "🔄 Quick Reply",
-          id: "btn_info",
-        },
-      },
-    ],
-  });
+    );
+
+    if (!buffer || buffer.length === 0)
+      throw new Error("Buffer kosong, coba kirim ulang.");
+    if (buffer.length > 5 * 1024 * 1024)
+      throw new Error(
+        `Terlalu besar: ${(buffer.length / 1024 / 1024).toFixed(1)} MB (max 5 MB)`,
+      );
+
+    fs.writeFileSync(BANNER_PATH, buffer);
+    const sizeKB = (buffer.length / 1024).toFixed(1);
+    console.log(`✅ Banner tersimpan: ${sizeKB} KB oleh +${senderNumber}`);
+
+    await sock.sendMessage(jid, {
+      image: buffer,
+      caption:
+        `✅ *BANNER DIPERBARUI!*\n\n` +
+        `📁 Ukuran: ${sizeKB} KB\n` +
+        `🕐 ${new Date().toLocaleString("id-ID")}\n` +
+        `👤 Oleh: +${senderNumber}`,
+    });
+
+    try {
+      const backupFiles = fs
+        .readdirSync(BANNER_DIR)
+        .filter((f) => f.startsWith("banner_menu_backup_"))
+        .sort()
+        .reverse();
+      for (let i = 3; i < backupFiles.length; i++) {
+        fs.unlinkSync(path.join(BANNER_DIR, backupFiles[i]));
+      }
+    } catch (e) {}
+  } catch (err) {
+    console.error(`❌ Gagal simpan banner: ${err.message}`);
+
+    try {
+      const backupFiles = fs
+        .readdirSync(BANNER_DIR)
+        .filter((f) => f.startsWith("banner_menu_backup_"))
+        .sort()
+        .reverse();
+      if (backupFiles.length > 0) {
+        fs.copyFileSync(path.join(BANNER_DIR, backupFiles[0]), BANNER_PATH);
+      }
+    } catch (e) {}
+
+    await sock.sendMessage(jid, {
+      text:
+        `❌ *GAGAL UPDATE BANNER*\n\n` +
+        `Error: ${err.message}\n\n` +
+        `Ketik *edit_banner* untuk coba lagi.`,
+    });
+  }
 }
 
 // ==========================================
-// 🖼️ IMAGE + BUTTON
+// ADMIN BOT ROUTER
 // ==========================================
-async function sendImageWithButton(sock, jid) {
-  await sock.sendMessage(jid, {
-    image: { url: "https://picsum.photos/500/300" },
-    caption: "🖼️ *IMAGE + BUTTON*\n\nContoh pesan gambar dengan button!",
-    footer: "© 2024",
-    buttons: [
-      { buttonId: "btn_info", buttonText: { displayText: "📌 Info" }, type: 1 },
-      { buttonId: "btn_ping", buttonText: { displayText: "🏓 Ping" }, type: 1 },
-    ],
-    headerType: 4,
-  });
+async function handleAdminBotRouter(
+  sock,
+  msg,
+  jid,
+  senderNumber,
+  rawId,
+  store = null,
+) {
+  if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) return;
+
+  if (rawId === "adminbot_list") {
+    await handleAdminBotList(sock, jid, senderNumber);
+    return;
+  }
+
+  if (rawId === "adminbot_add") {
+    await sock.sendMessage(jid, {
+      text:
+        `➕ *TAMBAH ADMIN BOT*\n\n` +
+        `Kirim dengan salah satu cara:\n\n` +
+        `• *Mention:* \`/addadmin @nomor\`\n` +
+        `• *Manual:* \`/addadmin 628xxxxxxxxxx\`\n\n` +
+        `⚠️ Tidak bisa menambah Owner sebagai admin.`,
+    });
+    return;
+  }
+
+  if (rawId === "adminbot_del") {
+    await handleAdminBotDelList(sock, jid, senderNumber);
+    return;
+  }
+
+  if (rawId.startsWith("adminbot_deladmin_")) {
+    await handleAdminBotDelFromList(sock, jid, senderNumber, rawId);
+    return;
+  }
+
+  if (rawId === "adminbot_orders") {
+    await handleAdminBotOrders(sock, jid, senderNumber);
+    return;
+  }
+
+  if (rawId === "adminbot_banner") {
+    await handleEditBanner(sock, jid, senderNumber);
+    return;
+  }
 }
 
 // ==========================================
 // EXPORT
 // ==========================================
 module.exports = {
-  handleMessage,
+  getAdminBotMenuSection,
+  handleAdminBotRouter,
+  handleAdminBotList,
+  handleAdminBotAdd,
+  handleAdminBotDel,
+  handleAdminBotDelFromList,
+  handleAdminBotOrders,
+  handleEditBanner,
+  handleIncomingImage,
+  bannerEditState,
 };

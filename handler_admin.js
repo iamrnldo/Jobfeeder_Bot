@@ -1,15 +1,6 @@
 // ==========================================
 //  HANDLER_ADMIN.JS
 //  Khusus: Admin Bot Panel
-//
-//  Hak Akses Admin Bot:
-//  ✅ Lihat daftar admin bot
-//  ✅ Tambah admin bot (sesama admin, TIDAK bisa tambah owner)
-//  ✅ Hapus admin bot (sesama admin, TIDAK bisa hapus owner)
-//  ✅ Edit banner menu
-//  ✅ Lihat daftar pesanan
-//  ❌ Tidak bisa akses group manager
-//  ❌ Tidak bisa tambah/hapus owner
 // ==========================================
 
 const fs = require("fs");
@@ -24,6 +15,7 @@ const {
   jidToDigits,
   getNumberFromJid,
   cleanNumber,
+  resolveJidToPhone, // ✅ Import fungsi resolve LID
 } = require("./handler_owner");
 
 const BANNER_PATH = path.join(__dirname, "images", "menu", "banner_menu.jpg");
@@ -102,7 +94,7 @@ async function handleAdminBotList(sock, jid, senderNumber) {
   let text =
     `╔══════════════════════════╗\n` +
     `║  📋 *DAFTAR ADMIN BOT*   ║\n` +
-    `╚══════════════════════════╝\n\n` +
+    `╚══════��═══════════════════╝\n\n` +
     `👑 *OWNER:*\n` +
     `└ 📱 +${config.ownerNumber}\n\n` +
     `🛡️ *ADMIN BOT (${admins.length}):*\n`;
@@ -122,30 +114,67 @@ async function handleAdminBotList(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// ADMIN BOT: TAMBAH ADMIN BOT
-// Admin hanya bisa tambah sesama admin
-// TIDAK bisa tambah owner
+// ✅ ADMIN BOT: TAMBAH ADMIN BOT
+// Support: mention + manual number
+// Mention di-resolve dari LID → nomor HP
 // ==========================================
-async function handleAdminBotAdd(sock, msg, jid, senderNumber, rawText) {
+async function handleAdminBotAdd(
+  sock,
+  msg,
+  jid,
+  senderNumber,
+  rawText,
+  store = null,
+) {
   if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
     await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
     return;
   }
 
   let target = "";
+  let resolveMethod = "manual";
+
   const mentions =
     msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
 
   if (mentions.length > 0) {
-    target = jidToDigits(mentions[0]);
+    // ✅ Ada mention — resolve JID/LID ke nomor HP
+    const mentionJid = mentions[0];
+    console.log(`🔍 Admin addadmin via mention, raw JID: ${mentionJid}`);
+
+    target = await resolveJidToPhone(mentionJid, sock, store);
+    target = normalizeNumber(target);
+    resolveMethod = "mention";
+
+    console.log(`✅ Mention resolved: ${mentionJid} → ${target}`);
+
+    // Validasi hasil resolve
+    if (!target || target.length < 10 || !target.startsWith("62")) {
+      await sock.sendMessage(jid, {
+        text:
+          `❌ *Gagal mendapatkan nomor dari mention*\n\n` +
+          `Nomor terdeteksi: \`${target || "kosong"}\`\n\n` +
+          `Kemungkinan penyebab:\n` +
+          `• Kontak tidak tersimpan di WA\n` +
+          `• Gunakan cara manual: \`/addadmin 628xxxxxxxxxx\``,
+      });
+      return;
+    }
   } else {
+    // Input manual
     const parts = rawText.split(/\s+/);
-    if (parts.length >= 2) target = normalizeNumber(parts[1]);
+    if (parts.length >= 2) {
+      target = normalizeNumber(parts[1]);
+    }
   }
 
   if (!target || target.length < 10) {
     await sock.sendMessage(jid, {
-      text: "❌ Format: `/addadmin 628xxxxxxxxxx`",
+      text:
+        `❌ *Format Salah*\n\n` +
+        `Gunakan salah satu cara:\n\n` +
+        `• *Mention:* \`/addadmin @nomor\`\n` +
+        `• *Manual:* \`/addadmin 628xxxxxxxxxx\``,
     });
     return;
   }
@@ -168,12 +197,17 @@ async function handleAdminBotAdd(sock, msg, jid, senderNumber, rawText) {
   const admins = loadAdmins();
   admins.push(target);
   saveAdmins(admins);
-  console.log(`✅ [ADMIN] Admin ditambahkan: +${target} oleh +${senderNumber}`);
+
+  console.log(
+    `✅ [ADMIN] Admin ditambahkan: +${target} ` +
+      `(via ${resolveMethod}) oleh +${senderNumber}`,
+  );
 
   await sock.sendMessage(jid, {
     text:
       `✅ *ADMIN BOT DITAMBAHKAN*\n\n` +
       `📱 Nomor: +${target}\n` +
+      `🔍 Cara: ${resolveMethod === "mention" ? "Mention @" : "Input manual"}\n` +
       `👤 Ditambahkan oleh: +${senderNumber}\n` +
       `📊 Total admin: ${admins.length}`,
   });
@@ -181,8 +215,6 @@ async function handleAdminBotAdd(sock, msg, jid, senderNumber, rawText) {
 
 // ==========================================
 // ADMIN BOT: HAPUS ADMIN BOT (command)
-// Admin hanya bisa hapus sesama admin
-// TIDAK bisa hapus owner
 // ==========================================
 async function handleAdminBotDel(sock, jid, senderNumber, rawText) {
   if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
@@ -220,7 +252,6 @@ async function handleAdminBotDelFromList(sock, jid, senderNumber, rawId) {
 // EXECUTE: HAPUS ADMIN BOT
 // ==========================================
 async function executeAdminBotDelete(sock, jid, senderNumber, target) {
-  // ✅ Admin TIDAK bisa hapus owner
   if (isOwner(target)) {
     await sock.sendMessage(jid, {
       text: `⛔ *TIDAK BISA MENGHAPUS OWNER*\n\nHanya Owner yang bisa mengelola dirinya sendiri.`,
@@ -235,7 +266,6 @@ async function executeAdminBotDelete(sock, jid, senderNumber, target) {
     return;
   }
 
-  // ✅ Admin tidak bisa hapus diri sendiri
   if (normalizeNumber(senderNumber) === normalizeNumber(target)) {
     await sock.sendMessage(jid, {
       text: `❌ Tidak bisa menghapus diri sendiri.\n\nMinta Owner untuk menghapus kamu.`,
@@ -260,8 +290,6 @@ async function executeAdminBotDelete(sock, jid, senderNumber, target) {
 
 // ==========================================
 // ADMIN BOT: LIST HAPUS ADMIN (pilihan)
-// Hanya tampilkan sesama admin
-// TIDAK tampilkan owner
 // ==========================================
 async function handleAdminBotDelList(sock, jid, senderNumber) {
   if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
@@ -269,10 +297,9 @@ async function handleAdminBotDelList(sock, jid, senderNumber) {
     return;
   }
 
-  // ✅ Hanya tampilkan admin lain (bukan owner, bukan diri sendiri)
   const admins = loadAdmins().filter((a) => {
-    if (isOwner(a)) return false; // skip owner
-    if (normalizeNumber(a) === normalizeNumber(senderNumber)) return false; // skip diri sendiri
+    if (isOwner(a)) return false;
+    if (normalizeNumber(a) === normalizeNumber(senderNumber)) return false;
     return true;
   });
 
@@ -366,10 +393,9 @@ async function handleAdminBotOrders(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// EDIT BANNER (bisa diakses admin bot, owner, admin group)
+// EDIT BANNER
 // ==========================================
 async function handleEditBanner(sock, jid, senderNumber) {
-  // Siapapun yang punya akses (dicek di handler.js sebelum dipanggil)
   ensureBannerDir();
   bannerEditState.set(senderNumber, {
     waiting: true,
@@ -525,7 +551,6 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
         `👤 Oleh: +${senderNumber}`,
     });
 
-    // Bersihkan backup lama (max 3)
     try {
       const backupFiles = fs
         .readdirSync(BANNER_DIR)
@@ -562,7 +587,14 @@ async function handleIncomingImage(sock, msg, jid, senderNumber) {
 // ==========================================
 // ADMIN BOT ROUTER
 // ==========================================
-async function handleAdminBotRouter(sock, msg, jid, senderNumber, rawId) {
+async function handleAdminBotRouter(
+  sock,
+  msg,
+  jid,
+  senderNumber,
+  rawId,
+  store = null,
+) {
   if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) return;
 
   if (rawId === "adminbot_list") {
@@ -574,8 +606,9 @@ async function handleAdminBotRouter(sock, msg, jid, senderNumber, rawId) {
     await sock.sendMessage(jid, {
       text:
         `➕ *TAMBAH ADMIN BOT*\n\n` +
-        `Kirim nomor admin baru:\n` +
-        `\`\`\`/addadmin 628xxxxxxxxxx\`\`\`\n\n` +
+        `Kirim dengan salah satu cara:\n\n` +
+        `• *Mention:* \`/addadmin @nomor\`\n` +
+        `• *Manual:* \`/addadmin 628xxxxxxxxxx\`\n\n` +
         `⚠️ Tidak bisa menambah Owner sebagai admin.`,
     });
     return;
@@ -606,18 +639,13 @@ async function handleAdminBotRouter(sock, msg, jid, senderNumber, rawId) {
 // EXPORT
 // ==========================================
 module.exports = {
-  // Panel
   getAdminBotMenuSection,
   handleAdminBotRouter,
-
-  // Handlers
   handleAdminBotList,
   handleAdminBotAdd,
   handleAdminBotDel,
   handleAdminBotDelFromList,
   handleAdminBotOrders,
-
-  // Banner (shared — bisa dipanggil dari handler lain)
   handleEditBanner,
   handleIncomingImage,
   bannerEditState,
