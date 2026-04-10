@@ -58,10 +58,22 @@ function isOwner(number) {
   return normalizeNumber(number) === normalizeNumber(config.ownerNumber);
 }
 
+// Tambahkan di handler_owner.js
+// Ganti fungsi isAdminBot yang lama
+
 function isAdminBot(number) {
   const admins = loadAdmins();
+  // ✅ normalizeNumber strip semua non-digit termasuk device suffix
   const n = normalizeNumber(number);
-  return admins.some((a) => normalizeNumber(a) === n);
+  return admins.some((a) => {
+    const an = normalizeNumber(a);
+    // Exact match
+    if (an === n) return true;
+    // Suffix match 8 digit (toleran perbedaan kode negara)
+    if (an.length >= 8 && n.length >= 8 && an.slice(-8) === n.slice(-8))
+      return true;
+    return false;
+  });
 }
 
 function isAdminOrOwner(number) {
