@@ -19,6 +19,10 @@ function isGroupChat(jid) {
   return jid.endsWith("@g.us");
 }
 
+function isPrivateChat(jid) {
+  return jid.endsWith("@s.whatsapp.net");
+}
+
 function getNumberFromJid(jid) {
   if (!jid) return "";
   return jid.split("@")[0].split(":")[0];
@@ -89,6 +93,7 @@ async function handleMessage(sock, msg) {
   text = text.toLowerCase().trim();
 
   const isBotMentioned = checkBotMentioned(msg, botNumber);
+  const isPrivate = isPrivateChat(jid);
 
   console.log(
     `📩 [${isGroupChat(jid) ? "GROUP" : "PRIVATE"}] ` +
@@ -98,8 +103,8 @@ async function handleMessage(sock, msg) {
 
   // ── Handle non-text (foto, video, audio, file) ──
   if (!text) {
-    // ✅ Cek announce state DULU sebelum handler lain
-    if (announce.announceState.has(senderNumber)) {
+    // ✅ Cek announce state DULU — hanya di private chat
+    if (isPrivate && announce.announceState.has(senderNumber)) {
       const handled = await announce.handleAnnounceIncoming(
         sock,
         msg,
@@ -117,7 +122,8 @@ async function handleMessage(sock, msg) {
   // PARAMETERIZED COMMANDS
   // ==========================================
 
-  if (announce.announceState.has(senderNumber)) {
+  // ✅ Announce state handler — hanya di private chat
+  if (isPrivate && announce.announceState.has(senderNumber)) {
     const handled = await announce.handleAnnounceIncoming(
       sock,
       msg,
@@ -159,18 +165,20 @@ async function handleMessage(sock, msg) {
     return;
   }
 
+  // ── Announce router — hanya private chat ──
   if (
-    text === "announce_start" ||
-    text === "announce_select_all" ||
-    text === "announce_deselect_all" ||
-    text === "announce_need_select" ||
-    text === "announce_next_compose" ||
-    text === "announce_recompose" ||
-    text === "announce_reselect" ||
-    text === "announce_send" ||
-    text === "announce_cancel" ||
-    text === "announce_history" ||
-    text.startsWith("announce_toggle_")
+    isPrivate &&
+    (text === "announce_start" ||
+      text === "announce_select_all" ||
+      text === "announce_deselect_all" ||
+      text === "announce_need_select" ||
+      text === "announce_next_compose" ||
+      text === "announce_recompose" ||
+      text === "announce_reselect" ||
+      text === "announce_send" ||
+      text === "announce_cancel" ||
+      text === "announce_history" ||
+      text.startsWith("announce_toggle_"))
   ) {
     await announce.handleAnnounceRouter(sock, msg, jid, senderNumber, text);
     return;
@@ -439,26 +447,45 @@ async function handleMessage(sock, msg) {
         break;
 
       // ======================================
-      // 📢 ANNOUNCE / BROADCAST
+      // 📢 ANNOUNCE / BROADCAST — PRIVATE ONLY
       // ======================================
       case "announce":
       case "/announce":
       case "/broadcast":
-      case "broadcast":
+      case "broadcast": {
+        if (!isPrivate) {
+          await sock.sendMessage(jid, {
+            text:
+              `📢 *BROADCAST*\n\n` +
+              `⚠️ Fitur ini hanya bisa digunakan di *private chat*.\n\n` +
+              `Silakan chat bot secara langsung untuk menggunakan fitur broadcast.`,
+          });
+          break;
+        }
         if (isOwner(senderNumber) || isAdminBot(senderNumber)) {
           await announce.handleAnnounceStart(sock, jid, senderNumber);
         } else {
           await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
         }
         break;
+      }
 
-      case "announce_history":
+      case "announce_history": {
+        if (!isPrivate) {
+          await sock.sendMessage(jid, {
+            text:
+              `📋 *RIWAYAT BROADCAST*\n\n` +
+              `⚠️ Fitur ini hanya bisa digunakan di *private chat*.`,
+          });
+          break;
+        }
         if (isOwner(senderNumber) || isAdminBot(senderNumber)) {
           await announce.handleAnnounceHistory(sock, jid, senderNumber);
         } else {
           await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
         }
         break;
+      }
 
       // ======================================
       // 👑 OWNER PANEL
@@ -790,6 +817,7 @@ async function handleMessage(sock, msg) {
 // ==========================================
 async function sendMainMenu(sock, msg, jid, sender, senderNumber) {
   const hasTestingService = config.services?.some((s) => s.id === "testing");
+  const isPrivate = isPrivateChat(jid);
   const sections = [];
 
   if (hasTestingService) {
@@ -906,12 +934,50 @@ async function sendMainMenu(sock, msg, jid, sender, senderNumber) {
     _isGroupAdmin = await adminGroup.canAccessGroupManager(sock, senderNumber);
   }
 
+  // ── Section Owner ──
   if (_isOwner) {
-    sections.push(owner.getOwnerMenuSection());
+    const ownerSection = owner.getOwnerMenuSection();
+
+    // ✅ Tambahkan menu announce hanya di private chat
+    if (isPrivate) {
+      ownerSection.rows.push({
+        header: "📢",
+        title: "Broadcast Group",
+        description: "Kirim pesan ke beberapa group",
+        id: "announce_start",
+      });
+      ownerSection.rows.push({
+        header: "📋",
+        title: "Riwayat Broadcast",
+        description: "Lihat history broadcast",
+        id: "announce_history",
+      });
+    }
+
+    sections.push(ownerSection);
   }
 
+  // ── Section Admin Bot ──
   if (_isAdminBot && !_isOwner) {
-    sections.push(adminBot.getAdminBotMenuSection(senderNumber));
+    const adminSection = adminBot.getAdminBotMenuSection(senderNumber);
+
+    // ✅ Tambahkan menu announce hanya di private chat
+    if (isPrivate) {
+      adminSection.rows.push({
+        header: "📢",
+        title: "Broadcast Group",
+        description: "Kirim pesan ke beberapa group",
+        id: "announce_start",
+      });
+      adminSection.rows.push({
+        header: "📋",
+        title: "Riwayat Broadcast",
+        description: "Lihat history broadcast",
+        id: "announce_history",
+      });
+    }
+
+    sections.push(adminSection);
   }
 
   if (_isGroupAdmin && !_isOwner && !_isAdminBot) {
