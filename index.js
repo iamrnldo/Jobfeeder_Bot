@@ -1,5 +1,5 @@
 // ==========================================
-//  INDEX.JS - Backend Utama
+// INDEX.JS - Backend Utama
 // ==========================================
 
 const {
@@ -14,6 +14,8 @@ const { Boom } = require("@hapi/boom");
 const pino = require("pino");
 const qrcode = require("qrcode-terminal");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 
 const { handleMessage } = require("./handler");
 const {
@@ -34,16 +36,91 @@ const {
 } = require("./lid_resolver");
 
 // ==========================================
-// KONFIGURASI
+// PATHS & KONFIGURASI
 // ==========================================
 const logger = pino({ level: "silent" });
 const PORT = process.env.PORT || 8080;
 
-const store = makeInMemoryStore({ logger });
-store?.readFromFile("./store.json");
-setInterval(() => store?.writeToFile("./store.json"), 10_000);
+const AUTH_DIR = path.resolve("./auth_session");
+const STORE_PATH = path.resolve("./store.json");
+const STORE_BACKUP_PATH = path.resolve("./store_backup.json");
+
+// ==========================================
+// ENSURE DIRECTORIES EXIST
+// ==========================================
+function ensureDirectories() {
+  if (!fs.existsSync(AUTH_DIR)) {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    console.log(`📁 Dibuat: ${AUTH_DIR}`);
+  }
+}
+
+// ==========================================
+// STORE MANAGEMENT — Dengan backup & recovery
+// ==========================================
+function initStore() {
+  const store = makeInMemoryStore({ logger });
+
+  // Coba load store utama
+  if (fs.existsSync(STORE_PATH)) {
+    try {
+      store.readFromFile(STORE_PATH);
+      console.log("✅ Store loaded dari store.json");
+    } catch (e) {
+      console.warn(`⚠️ store.json rusak: ${e.message}`);
+
+      // Coba load backup
+      if (fs.existsSync(STORE_BACKUP_PATH)) {
+        try {
+          store.readFromFile(STORE_BACKUP_PATH);
+          console.log("✅ Store recovered dari store_backup.json");
+        } catch (e2) {
+          console.warn(`⚠️ store_backup.json juga rusak: ${e2.message}`);
+        }
+      }
+    }
+  } else {
+    console.log("ℹ️ store.json belum ada, mulai fresh store.");
+  }
+
+  return store;
+}
+
+function startStorePersistence(store) {
+  // Simpan store setiap 10 detik
+  setInterval(() => {
+    try {
+      // Simpan ke file utama
+      store.writeToFile(STORE_PATH);
+
+      // Buat backup setiap menit (dari file utama yang sudah valid)
+      const now = Date.now();
+      if (
+        !startStorePersistence._lastBackup ||
+        now - startStorePersistence._lastBackup > 60_000
+      ) {
+        if (fs.existsSync(STORE_PATH)) {
+          fs.copyFileSync(STORE_PATH, STORE_BACKUP_PATH);
+        }
+        startStorePersistence._lastBackup = now;
+      }
+    } catch (e) {
+      console.warn(`⚠️ Gagal simpan store: ${e.message}`);
+    }
+  }, 10_000);
+}
+
+// ==========================================
+// GLOBAL STATE
+// ==========================================
+ensureDirectories();
+const store = initStore();
+startStorePersistence(store);
 
 let activeSock = null;
+let isReconnecting = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 let botStatus = {
   connected: false,
@@ -107,6 +184,7 @@ const server = http.createServer(async (req, res) => {
         messages: botStatus.messageCount,
         webhooks: botStatus.webhookCount,
         lidMappings: getLidMapSize(),
+        reconnectAttempts,
       }),
     );
     return;
@@ -146,6 +224,7 @@ const server = http.createServer(async (req, res) => {
       <div><span class="l">Messages</span><span class="v">${botStatus.messageCount}</span></div>
       <div><span class="l">Webhooks</span><span class="v">${botStatus.webhookCount}</span></div>
       <div><span class="l">LID Mappings</span><span class="v">${getLidMapSize()}</span></div>
+      <div><span class="l">Reconnects</span><span class="v">${reconnectAttempts}</span></div>
       </div></div>
       <div class="c"><h2>💳 Payment</h2><div class="i">
       <div><span class="l">Total Orders</span><span class="v">${all.length}</span></div>
@@ -262,6 +341,44 @@ function getUptime(start) {
 }
 
 // ==========================================
+// RECONNECT DENGAN BACKOFF
+// ==========================================
+async function scheduleReconnect(delay = 3000) {
+  if (isReconnecting) return;
+  isReconnecting = true;
+
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    console.error(
+      `❌ Gagal reconnect setelah ${MAX_RECONNECT_ATTEMPTS} percobaan.`,
+    );
+    console.error(`   Cek koneksi internet atau session WhatsApp.`);
+    isReconnecting = false;
+    return;
+  }
+
+  reconnectAttempts++;
+  // Exponential backoff: 3s, 6s, 12s, 24s, ... max 60s
+  const actualDelay = Math.min(
+    delay * Math.pow(1.5, reconnectAttempts - 1),
+    60_000,
+  );
+
+  console.log(
+    `🔄 Reconnect #${reconnectAttempts} dalam ${(actualDelay / 1000).toFixed(1)}s...`,
+  );
+
+  setTimeout(async () => {
+    isReconnecting = false;
+    try {
+      await startBot();
+    } catch (e) {
+      console.error(`❌ Reconnect error: ${e.message}`);
+      await scheduleReconnect(delay);
+    }
+  }, actualDelay);
+}
+
+// ==========================================
 // AUTO-REGISTER LID DARI PESAN MASUK
 // ==========================================
 async function autoRegisterFromMessage(sock, msg) {
@@ -272,8 +389,6 @@ async function autoRegisterFromMessage(sock, msg) {
     const senderPhone = jidToDigits(senderJid);
     if (senderPhone.length < 8) return;
 
-    // ── participantLid: field kunci dari Baileys ──
-    // Tersedia di group message, berisi LID dari sender
     const participantLid =
       msg.key?.participantLid || msg.key?.participant_lid || null;
 
@@ -281,7 +396,6 @@ async function autoRegisterFromMessage(sock, msg) {
       registerLidMapping(participantLid, senderPhone);
     }
 
-    // ── store.contacts ──
     if (sock.store?.contacts) {
       const contact = sock.store.contacts[senderJid];
       if (contact?.lid) {
@@ -301,7 +415,6 @@ async function autoRegisterFromMessage(sock, msg) {
       }
     }
 
-    // ── Mentions dalam pesan ──
     const mentionedJids =
       msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
 
@@ -317,7 +430,6 @@ async function autoRegisterFromMessage(sock, msg) {
       }
     }
 
-    // ── participant info dari message ──
     const participantInfo =
       msg.message?.extendedTextMessage?.contextInfo?.participant ||
       msg.message?.extendedTextMessage?.contextInfo?.remoteJid ||
@@ -333,13 +445,12 @@ async function autoRegisterFromMessage(sock, msg) {
       }
     }
   } catch (e) {
-    // silent — jangan crash karena LID mapping
+    // silent
   }
 }
 
 // ==========================================
-// SCAN GRUP: Populate LID map dari semua peserta
-// Dipanggil saat bot connect atau saat butuh resolve
+// SCAN GRUP: Populate LID map
 // ==========================================
 async function scanGroupForLidMapping(sock, groupJid) {
   try {
@@ -348,12 +459,10 @@ async function scanGroupForLidMapping(sock, groupJid) {
 
     let mapped = 0;
     for (const p of participants) {
-      // Case 1: p.id = phone, p.lid = LID
       if (p.lid && isPhoneJid(p.id) && isLidJid(p.lid)) {
         registerLidMapping(p.lid, jidToDigits(p.id));
         mapped++;
       }
-      // Case 2: p.id = LID, p.lid = phone
       if (p.lid && isLidJid(p.id) && isPhoneJid(p.lid)) {
         registerLidMapping(p.id, jidToDigits(p.lid));
         mapped++;
@@ -362,7 +471,7 @@ async function scanGroupForLidMapping(sock, groupJid) {
 
     if (mapped > 0) {
       console.log(
-        `🔍 [ScanGroup] ${groupJid}: ${mapped} LID mapped dari ${participants.length} participants`,
+        `🔍 [ScanGroup] ${groupJid}: ${mapped}/${participants.length} LID mapped`,
       );
     }
   } catch (e) {
@@ -371,10 +480,49 @@ async function scanGroupForLidMapping(sock, groupJid) {
 }
 
 // ==========================================
+// CEK APAKAH SESSION MASIH VALID
+// ==========================================
+function isSessionExists() {
+  if (!fs.existsSync(AUTH_DIR)) return false;
+
+  const files = fs.readdirSync(AUTH_DIR);
+  // Session valid jika ada file creds.json
+  const hasCreds = files.some((f) => f === "creds.json");
+
+  if (hasCreds) {
+    try {
+      const creds = JSON.parse(
+        fs.readFileSync(path.join(AUTH_DIR, "creds.json"), "utf-8"),
+      );
+      // Pastikan creds punya field penting
+      const isValid = !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
+      if (!isValid) {
+        console.warn("⚠️ creds.json ada tapi tidak valid (field kosong)");
+      }
+      return isValid;
+    } catch (e) {
+      console.warn(`⚠️ creds.json tidak bisa dibaca: ${e.message}`);
+      return false;
+    }
+  }
+
+  return false;
+}
+
+// ==========================================
 // START BOT
 // ==========================================
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState("./auth_session");
+  ensureDirectories();
+
+  const sessionExists = isSessionExists();
+  console.log(
+    sessionExists
+      ? "🔑 Session ditemukan — mencoba resume tanpa scan QR..."
+      : "📱 Session tidak ditemukan — akan tampilkan QR Code...",
+  );
+
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version, isLatest } = await fetchLatestBaileysVersion();
 
   console.log(`📌 WA Web v${version.join(".")}, latest: ${isLatest}`);
@@ -382,6 +530,7 @@ async function startBot() {
   const sock = makeWASocket({
     version,
     logger,
+    // QR hanya tampil jika session tidak ada
     printQRInTerminal: false,
     auth: {
       creds: state.creds,
@@ -389,8 +538,18 @@ async function startBot() {
     },
     generateHighQualityLinkPreview: true,
     browser: ["Bot WhatsApp", "Chrome", "1.0.0"],
+    // ── Penting untuk session stability ──
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    connectTimeoutMs: 60_000,
+    defaultQueryTimeoutMs: 60_000,
+    keepAliveIntervalMs: 25_000,
+    retryRequestDelayMs: 2_000,
+    maxMsgRetryCount: 3,
   });
 
+  // Inject store ke sock agar accessible dari handler
+  sock.store = store;
   activeSock = sock;
   store?.bind(sock.ev);
 
@@ -398,24 +557,36 @@ async function startBot() {
   // CONNECTION UPDATE
   // ==========================================
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const { connection, lastDisconnect, qr, isNewLogin } = update;
 
+    // ── Tampilkan QR ──
     if (qr) {
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   📱 SCAN QR CODE DI BAWAH INI      ║");
       console.log("╚══════════════════════════════════════╝\n");
       qrcode.generate(qr, { small: true });
+      console.log("\n⚠️  QR Code berlaku ~20 detik, scan cepat!");
     }
 
+    // ── Berhasil connect ──
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
+      reconnectAttempts = 0; // Reset counter setelah berhasil
+      isReconnecting = false;
       setBotRuntimeInfo(sock);
 
+      console.log("\n╔══════════════════════════════════════╗");
+      if (isNewLogin) {
+        console.log("║   🆕 LOGIN BARU BERHASIL!            ║");
+      } else {
+        console.log("║   ✅ SESSION RESUME BERHASIL!        ║");
+      }
+      console.log("╚══���═══════════════════════════════════╝");
       console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
-      console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}`);
+      console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}\n`);
 
-      // Register bot sendiri
+      // Register bot sendiri ke LID map
       if (sock.user?.id && sock.user?.lid) {
         const botPhone = jidToDigits(sock.user.id);
         if (botPhone.length >= 8) {
@@ -423,56 +594,92 @@ async function startBot() {
         }
       }
 
-      console.log("\n╔══════════════════════════════════════╗");
-      console.log("║   ✅ BOT + PAKASIR QRIS READY!       ║");
-      console.log("╚══════════════════════════════════════╝\n");
-
-      // Scan semua grup yang diketahui store
+      // Scan grup dengan delay
       setTimeout(async () => {
         try {
           if (sock.store?.chats) {
             const groupChats = Object.keys(sock.store.chats).filter((id) =>
               id.endsWith("@g.us"),
             );
-            console.log(
-              `🔍 Scanning ${groupChats.length} grup untuk LID mapping...`,
-            );
-            for (const gid of groupChats) {
-              await scanGroupForLidMapping(sock, gid);
-              // Delay kecil agar tidak rate-limit
-              await new Promise((r) => setTimeout(r, 300));
+            if (groupChats.length > 0) {
+              console.log(
+                `🔍 Scanning ${groupChats.length} grup untuk LID mapping...`,
+              );
+              for (const gid of groupChats) {
+                await scanGroupForLidMapping(sock, gid);
+                await new Promise((r) => setTimeout(r, 300));
+              }
+              console.log(
+                `✅ Scan selesai. LID map: ${getLidMapSize()} entries`,
+              );
             }
-            console.log(
-              `✅ Scan grup selesai. LID map: ${getLidMapSize()} entries`,
-            );
           }
         } catch (e) {
           console.error(`⚠️ Scan grup error: ${e.message}`);
         }
-      }, 5000); // Delay 5 detik setelah connect
+      }, 5000);
     }
 
+    // ── Koneksi terputus ──
     if (connection === "close") {
       botStatus.connected = false;
-      const shouldReconnect =
-        lastDisconnect?.error instanceof Boom
-          ? lastDisconnect.error.output.statusCode !==
-            DisconnectReason.loggedOut
-          : true;
+      activeSock = null;
+
+      const error = lastDisconnect?.error;
+      const statusCode =
+        error instanceof Boom ? error.output?.statusCode : null;
+
+      console.log(`\n⚠️  Koneksi terputus.`);
+      console.log(`   Status code: ${statusCode || "unknown"}`);
+      console.log(`   Error: ${error?.message || "unknown"}`);
+
+      // ── Tentukan apakah perlu reconnect ──
+      const LOGOUT_CODES = [
+        DisconnectReason.loggedOut, // 401
+        DisconnectReason.forbidden, // 403
+      ];
+
+      const isLoggedOut = LOGOUT_CODES.includes(statusCode);
+
+      if (isLoggedOut) {
+        // Session tidak valid lagi — harus scan ulang
+        console.log("\n🚪 SESSION TIDAK VALID — Perlu scan QR ulang.");
+        console.log("   Menghapus session lama...");
+
+        // Hapus session lama
+        try {
+          const files = fs.readdirSync(AUTH_DIR);
+          for (const file of files) {
+            fs.unlinkSync(path.join(AUTH_DIR, file));
+          }
+          console.log("✅ Session lama dihapus. Restart bot untuk scan QR.");
+        } catch (e) {
+          console.error(`❌ Gagal hapus session: ${e.message}`);
+        }
+
+        // Jangan reconnect — minta user restart manual
+        return;
+      }
+
+      // Untuk error lain: reconnect otomatis
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
-        console.log("🔄 Reconnecting...");
-        startBot();
-      } else {
-        console.log("🚪 Logged out.");
+        await scheduleReconnect(3000);
       }
     }
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  // ==========================================
+  // CREDS UPDATE — Simpan segera setelah update
+  // ==========================================
+  sock.ev.on("creds.update", async () => {
+    await saveCreds();
+    console.log("💾 Credentials tersimpan.");
+  });
 
   // ==========================================
-  // CONTACTS UPSERT — Sumber utama LID mapping
+  // CONTACTS UPSERT
   // ==========================================
   sock.ev.on("contacts.upsert", (contacts) => {
     console.log(`📇 contacts.upsert: ${contacts.length} contacts`);
@@ -523,13 +730,61 @@ async function startBot() {
 
     for (const msg of messages) {
       botStatus.messageCount++;
-      await autoRegisterFromMessage(sock, msg);
-      await handleMessage(sock, msg);
+      try {
+        await autoRegisterFromMessage(sock, msg);
+        await handleMessage(sock, msg);
+      } catch (e) {
+        console.error(`❌ Error handle message: ${e.message}`);
+      }
     }
   });
 
   return sock;
 }
+
+// ==========================================
+// GRACEFUL SHUTDOWN
+// ==========================================
+async function gracefulShutdown(signal) {
+  console.log(`\n📴 Menerima ${signal} — shutdown...`);
+
+  // Simpan store sebelum keluar
+  try {
+    if (store) {
+      store.writeToFile(STORE_PATH);
+      fs.copyFileSync(STORE_PATH, STORE_BACKUP_PATH);
+      console.log("💾 Store tersimpan sebelum shutdown.");
+    }
+  } catch (e) {
+    console.error(`⚠️ Gagal simpan store: ${e.message}`);
+  }
+
+  // Tutup koneksi WA dengan bersih
+  if (activeSock) {
+    try {
+      await activeSock.logout();
+    } catch (e) {
+      // Ignore — mungkin sudah disconnect
+    }
+  }
+
+  process.exit(0);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// Handle uncaught errors — jangan crash, coba reconnect
+process.on("uncaughtException", (err) => {
+  console.error("❌ uncaughtException:", err.message);
+  console.error(err.stack);
+  // Jangan exit — biarkan bot tetap jalan
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ unhandledRejection:", reason);
+  // Jangan exit
+});
 
 // ==========================================
 // RUN
@@ -539,4 +794,7 @@ console.log("║   🤖 BOT WA + PAKASIR QRIS          ║");
 console.log("║   API: app.pakasir.com               ║");
 console.log("╚══════════════════════════════════════╝\n");
 
-startBot().catch((err) => console.error("Fatal:", err));
+startBot().catch((err) => {
+  console.error("Fatal:", err);
+  scheduleReconnect(5000);
+});

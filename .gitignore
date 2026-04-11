@@ -1,0 +1,12 @@
+# Auth session — JANGAN pernah commit ini
+auth_session/
+
+# Store
+store.json
+store_backup.json
+
+# Node modules
+node_modules/
+
+# Logs
+*.log
