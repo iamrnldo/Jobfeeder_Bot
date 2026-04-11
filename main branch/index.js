@@ -1,7 +1,7 @@
 // ==========================================
 // INDEX.JS - Backend Utama
 // ==========================================
-require("dotenv").config(); 
+require("dotenv").config();
 
 const {
   default: makeWASocket,
@@ -48,7 +48,6 @@ const {
 const logger = pino({ level: "silent" });
 const PORT = process.env.PORT || 8080;
 
-// Store di dalam main branch/
 const STORE_PATH = path.resolve(__dirname, "store.json");
 const STORE_BACKUP_PATH = path.resolve(__dirname, "store_backup.json");
 
@@ -56,8 +55,6 @@ const STORE_BACKUP_PATH = path.resolve(__dirname, "store_backup.json");
 // ENSURE DIRECTORIES
 // ==========================================
 function ensureDirectories() {
-  // AUTH_DIR sudah dihandle session_manager
-  // Hanya buat direktori yang ada di dalam __dirname
   const dirs = [
     path.resolve(__dirname, "database"),
     path.resolve(__dirname, "images", "menu"),
@@ -152,7 +149,6 @@ const server = http.createServer(async (req, res) => {
   const url = req.url;
   const method = req.method;
 
-  // ── Webhook Pakasir ──
   if (url === "/webhook/pakasir" && method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk.toString()));
@@ -187,7 +183,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Ping ──
   if (url === "/ping" || url === "/") {
     botStatus.lastPing = new Date();
     botStatus.pingCount++;
@@ -207,14 +202,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Health ──
   if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "healthy" }));
     return;
   }
 
-  // ── Status Dashboard ──
   if (url === "/status") {
     const all = pakasir.loadOrders();
     const completed = all.filter((o) => o.status === "completed");
@@ -546,7 +539,6 @@ async function startBot() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
 
-    // ── Tampilkan QR ──
     if (qr) {
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   📱 SCAN QR CODE DI BAWAH INI      ║");
@@ -555,7 +547,6 @@ async function startBot() {
       console.log("\n⚠️  QR Code berlaku ~20 detik, scan cepat!\n");
     }
 
-    // ── Berhasil connect ──
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
@@ -574,7 +565,6 @@ async function startBot() {
       console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}`);
       console.log(`📁 Session dir : ${AUTH_DIR}\n`);
 
-      // Register bot ke LID map
       if (sock.user?.id && sock.user?.lid) {
         const botPhone = jidToDigits(sock.user.id);
         if (botPhone.length >= 8) {
@@ -582,10 +572,13 @@ async function startBot() {
         }
       }
 
-      // Backup segera setelah login baru
+      // Backup setelah login baru atau resume
       if (isNewLogin) {
-        console.log("💾 Login baru — backup session ke MongoDB...");
+        console.log("💾 Login baru — backup session ke Supabase...");
         scheduleBackup(3000);
+      } else {
+        // Resume: backup juga untuk pastikan Supabase up-to-date
+        scheduleBackup(10000);
       }
 
       // Scan grup
@@ -614,7 +607,6 @@ async function startBot() {
       }, 5000);
     }
 
-    // ── Koneksi terputus ──
     if (connection === "close") {
       botStatus.connected = false;
       activeSock = null;
@@ -659,7 +651,7 @@ async function startBot() {
   });
 
   // ==========================================
-  // CREDS UPDATE — Simpan + backup MongoDB
+  // CREDS UPDATE — Simpan + backup Supabase
   // ==========================================
   sock.ev.on("creds.update", async () => {
     await saveCreds();
@@ -667,27 +659,18 @@ async function startBot() {
     scheduleBackup(5000);
   });
 
-  // ==========================================
-  // CONTACTS UPSERT
-  // ==========================================
   sock.ev.on("contacts.upsert", (contacts) => {
     console.log(`📇 contacts.upsert: ${contacts.length} contacts`);
     processContactsUpsert(contacts);
     console.log(`   LID map size: ${getLidMapSize()}`);
   });
 
-  // ==========================================
-  // CONTACTS UPDATE
-  // ==========================================
   sock.ev.on("contacts.update", (updates) => {
     for (const update of updates) {
       processContact(update);
     }
   });
 
-  // ==========================================
-  // CHATS UPSERT
-  // ==========================================
   sock.ev.on("chats.upsert", (chats) => {
     for (const chat of chats) {
       if (chat.id && chat.lid) {
@@ -701,9 +684,6 @@ async function startBot() {
     }
   });
 
-  // ==========================================
-  // GROUP PARTICIPANTS UPDATE
-  // ==========================================
   sock.ev.on("group-participants.update", async (update) => {
     try {
       const { id: groupId } = update;
@@ -711,9 +691,6 @@ async function startBot() {
     } catch (e) {}
   });
 
-  // ==========================================
-  // MESSAGES UPSERT
-  // ==========================================
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
 
@@ -749,7 +726,7 @@ async function gracefulShutdown(signal) {
 
   try {
     await backupSession();
-    console.log("💾 Session di-backup ke MongoDB sebelum shutdown.");
+    console.log("💾 Session di-backup ke Supabase sebelum shutdown.");
   } catch (e) {
     console.warn(`⚠️ Gagal backup session: ${e.message}`);
   }
@@ -778,11 +755,10 @@ async function main() {
   console.log("║   API: app.pakasir.com               ║");
   console.log("╚══════════════════════════════════════╝\n");
 
-  // ── Step 1: Init session manager ──
-  // Restore session dari MongoDB jika ada
+  // Step 1: Init & restore session dari Supabase
   await initSessionManager();
 
-  // ── Step 2: Start bot ──
+  // Step 2: Start bot
   await startBot();
 }
 
