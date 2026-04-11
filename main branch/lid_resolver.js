@@ -1,24 +1,49 @@
 // ==========================================
-//  LID_RESOLVER.JS - Dengan Persistensi File & Supabase
+// LID_RESOLVER.JS
+// Resolve LID → Nomor HP + Supabase Sync
 // ==========================================
-
-const fs = require("fs");
-const path = require("path");
 
 const lidToPhoneMap = new Map();
 const phoneToLidMap = new Map();
+let pgClient = null;
+let isDbConnected = false;
 
 // ==========================================
-// PERSISTENCE FILE PATH
+// CONNECT DATABASE
 // ==========================================
-// Folder ini sama dengan AUTH_DIR dari session_manager
-// Jadi isi file ini OTOMATIS ter-backup ke Supabase!
-const LID_FILE_PATH = path.resolve(
-  __dirname,
-  "..",
-  "session_data", // atau ".." sesuai struktur kamu
-  "lid_mapping.json",
-);
+async function connectDB() {
+  if (isDbConnected && pgClient) {
+    try {
+      await pgClient.query("SELECT 1");
+      return true;
+    } catch {
+      isDbConnected = false;
+      pgClient = null;
+    }
+  }
+
+  const DATABASE_URL = process.env.DATABASE_URL;
+  if (!DATABASE_URL) return false;
+
+  try {
+    const { Client } = require("pg");
+    pgClient = new Client({
+      connectionString: DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
+    });
+
+    await pgClient.connect();
+    isDbConnected = true;
+    console.log("[LID] ✅ Database terhubung");
+    return true;
+  } catch (e) {
+    console.log(`[LID] ⚠️ Database tidak terhubung: ${e.message}`);
+    isDbConnected = false;
+    pgClient = null;
+    return false;
+  }
+}
 
 // ==========================================
 // HELPERS
@@ -43,70 +68,10 @@ function isPhoneJid(jid) {
 }
 
 // ==========================================
-// SAVE TO FILE (dipanggil session_manager)
+// REGISTER MAPPING + SAVE TO SUPABASE
 // ==========================================
-function getLidFilePath() {
-  return LID_FILE_PATH;
-}
-
-function saveLidToFile() {
-  try {
-    const dir = path.dirname(LID_FILE_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    const data = {
-      version: 1,
-      savedAt: new Date().toISOString(),
-      entries: Array.from(lidToPhoneMap.entries()),
-    };
-
-    fs.writeFileSync(LID_FILE_PATH, JSON.stringify(data, null, 2));
-    console.log(`💾 [LID] Saved ${lidToPhoneMap.size} mappings to file`);
-    return true;
-  } catch (e) {
-    console.error(`⚠️ [LID] Failed to save file: ${e.message}`);
-    return false;
-  }
-}
-
-// ==========================================
-// RESTORE FROM FILE (dipanggil saat bot start)
-// ==========================================
-async function loadLidFromFile() {
-  if (fs.existsSync(LID_FILE_PATH)) {
-    try {
-      const raw = fs.readFileSync(LID_FILE_PATH, "utf-8");
-      const data = JSON.parse(raw);
-
-      if (data.entries && Array.isArray(data.entries)) {
-        for (const [lid, phone] of data.entries) {
-          lidToPhoneMap.set(lid, phone);
-          lidToPhoneMap.set(phone.replace(/[^0-9]/g, ""), lid);
-        }
-
-        console.log(
-          `✅ [LID] Restored ${data.entries.length} mappings from file`,
-        );
-        console.log(`   File: ${LID_FILE_PATH}`);
-        return true;
-      }
-    } catch (e) {
-      console.warn(`⚠️ [LID] Corrupt file: ${e.message}`);
-    }
-  } else {
-    console.log(`ℹ️  [LID] No saved file found at: ${LID_FILE_PATH}`);
-  }
-  return false;
-}
-
-// ==========================================
-// REGISTER MAPPING
-// ==========================================
-function registerLidMapping(lidJid, phone) {
+async function registerLidMapping(lidJid, phone, source = "auto") {
   if (!lidJid || !phone) return;
-
   const cleanPhone = String(phone).replace(/[^0-9]/g, "");
   if (cleanPhone.length < 8) return;
 
@@ -114,6 +79,7 @@ function registerLidMapping(lidJid, phone) {
   const lidDigits = jidToDigits(lidJid);
   const isNew = !lidToPhoneMap.has(lidFull);
 
+  // Simpan di memory
   lidToPhoneMap.set(lidFull, cleanPhone);
   lidToPhoneMap.set(lidDigits, cleanPhone);
   phoneToLidMap.set(cleanPhone, lidFull);
@@ -121,17 +87,65 @@ function registerLidMapping(lidJid, phone) {
   if (isNew) {
     console.log(`🗂️  [LID] Mapped "${lidJid}" → "+${cleanPhone}"`);
 
-    // Auto-save setelah setiap mapping baru (debounced)
-    scheduleSave();
+    // Simpan ke Supabase (async, jangan block)
+    saveLidToDatabase(lidFull, lidDigits, cleanPhone, source).catch((e) =>
+      console.log(`[LID] ⚠️ Gagal save ke DB: ${e.message}`),
+    );
   }
 }
 
-let saveTimeout = null;
-function scheduleSave(delayMs = 5000) {
-  if (saveTimeout) clearTimeout(saveTimeout);
-  saveTimeout = setTimeout(() => {
-    saveLidToFile();
-  }, delayMs);
+// ==========================================
+// SAVE LID TO DATABASE
+// ==========================================
+async function saveLidToDatabase(lidJid, lidDigits, phone, source) {
+  const ok = await connectDB();
+  if (!ok) return;
+
+  try {
+    await pgClient.query(`SELECT upsert_lid_mapping($1, $2, $3, $4)`, [
+      lidJid,
+      lidDigits,
+      phone,
+      source,
+    ]);
+    console.log(`💾 [LID] Saved to Supabase: +${phone}`);
+  } catch (e) {
+    console.log(`❌ [LID] Save error: ${e.message}`);
+  }
+}
+
+// ==========================================
+// LOAD LID FROM DATABASE
+// ==========================================
+async function loadLidFromDatabase() {
+  const ok = await connectDB();
+  if (!ok) return 0;
+
+  try {
+    const result = await pgClient.query(
+      "SELECT lid_jid, lid_digits, phone_number FROM whatsapp_lid_mappings",
+    );
+
+    let count = 0;
+    for (const row of result.rows) {
+      const lidFull = row.lid_jid.toLowerCase();
+      const lidDigits = row.lid_digits;
+      const phone = row.phone_number;
+
+      lidToPhoneMap.set(lidFull, phone);
+      if (lidDigits) lidToPhoneMap.set(lidDigits, phone);
+      phoneToLidMap.set(phone, lidFull);
+      count++;
+    }
+
+    if (count > 0) {
+      console.log(`📥 [LID] Loaded ${count} mappings from Supabase`);
+    }
+    return count;
+  } catch (e) {
+    console.log(`❌ [LID] Load error: ${e.message}`);
+    return 0;
+  }
 }
 
 // ==========================================
@@ -143,13 +157,13 @@ function processContact(contact) {
 
   if (isPhoneJid(id) && contact.lid && isLidJid(contact.lid)) {
     const phone = jidToDigits(id);
-    if (phone.length >= 8) registerLidMapping(contact.lid, phone);
+    if (phone.length >= 8) registerLidMapping(contact.lid, phone, "contact");
     return;
   }
 
   if (isLidJid(id) && contact.lid && isPhoneJid(contact.lid)) {
     const phone = jidToDigits(contact.lid);
-    if (phone.length >= 8) registerLidMapping(id, phone);
+    if (phone.length >= 8) registerLidMapping(id, phone, "contact");
   }
 }
 
@@ -189,7 +203,16 @@ async function resolveMentionToPhone(sock, mentionJid, groupJid = null) {
     return fromCache;
   }
 
-  // ── Strategi 2: sock.store.contacts scan ──
+  // ── Strategi 2: Database ──
+  const fromDb = await loadLidFromDatabase();
+  const fromDbCache =
+    lidToPhoneMap.get(lidFull) || lidToPhoneMap.get(lidDigits);
+  if (fromDbCache) {
+    console.log(`✅ [LID][Database] → "+${fromDbCache}"`);
+    return fromDbCache;
+  }
+
+  // ── Strategi 3: sock.store.contacts scan ──
   if (sock.store?.contacts) {
     for (const [contactId, contact] of Object.entries(sock.store.contacts)) {
       if (!contact) continue;
@@ -202,7 +225,7 @@ async function resolveMentionToPhone(sock, mentionJid, groupJid = null) {
         const phone = jidToDigits(contactId);
         if (phone.length >= 8) {
           console.log(`✅ [LID][Store-scan lid field] → "+${phone}"`);
-          registerLidMapping(mentionJid, phone);
+          registerLidMapping(mentionJid, phone, "store");
           return phone;
         }
       }
@@ -215,24 +238,25 @@ async function resolveMentionToPhone(sock, mentionJid, groupJid = null) {
         const phone = (contact.phone || "").replace(/[^0-9]/g, "");
         if (phone.length >= 8) {
           console.log(`✅ [LID][Store contact.phone] → "+${phone}"`);
-          registerLidMapping(mentionJid, phone);
+          registerLidMapping(mentionJid, phone, "store");
           return phone;
         }
       }
     }
   }
 
-  // ── Strategi 3: groupMetadata ──
+  // ── Strategi 4: groupMetadata ──
   if (groupJid) {
     try {
       const meta = await sock.groupMetadata(groupJid);
       const participants = meta.participants || [];
 
       for (const p of participants) {
+        // p.id = phone, p.lid = LID
         if (p.lid && isPhoneJid(p.id) && isLidJid(p.lid)) {
           const phone = jidToDigits(p.id);
           if (phone.length >= 8) {
-            registerLidMapping(p.lid, phone);
+            registerLidMapping(p.lid, phone, "group");
             if (jidToDigits(p.lid) === lidDigits) {
               console.log(`✅ [LID][Group p.lid] → "+${phone}"`);
               return phone;
@@ -240,24 +264,13 @@ async function resolveMentionToPhone(sock, mentionJid, groupJid = null) {
           }
         }
 
+        // p.id = LID, p.lid = phone — reversed
         if (p.lid && isLidJid(p.id) && isPhoneJid(p.lid)) {
           const phone = jidToDigits(p.lid);
           if (phone.length >= 8) {
-            registerLidMapping(p.id, phone);
+            registerLidMapping(p.id, phone, "group");
             if (jidToDigits(p.id) === lidDigits) {
               console.log(`✅ [LID][Group p.id=lid] → "+${phone}"`);
-              return phone;
-            }
-          }
-        }
-
-        if (isLidJid(p.id) && jidToDigits(p.id) === lidDigits) {
-          const storeContact = sock.store?.contacts?.[p.id];
-          if (storeContact?.phone) {
-            const phone = storeContact.phone.replace(/[^0-9]/g, "");
-            if (phone.length >= 8) {
-              console.log(`✅ [LID][Group+Store phone] → "+${phone}"`);
-              registerLidMapping(mentionJid, phone);
               return phone;
             }
           }
@@ -268,6 +281,7 @@ async function resolveMentionToPhone(sock, mentionJid, groupJid = null) {
     }
   }
 
+  // ── Strategi 5: Gagal ──
   console.log(
     `❌ [LID] Cannot resolve "${mentionJid}" | ` +
       `LID map: ${lidToPhoneMap.size} | ` +
@@ -288,9 +302,24 @@ function getLidMapEntries() {
 }
 
 // ==========================================
+// INIT — Load dari Database saat start
+// ==========================================
+async function initLidResolver() {
+  console.log("\n╔══════════════════════════════════════╗");
+  console.log("║   🗂️  LID RESOLVER INIT              ║");
+  console.log("╚══════════════════════════════════════╝");
+
+  const count = await loadLidFromDatabase();
+  console.log(`📊 Total LID mappings: ${lidToPhoneMap.size}`);
+
+  return count;
+}
+
+// ==========================================
 // EXPORTS
 // ==========================================
 module.exports = {
+  initLidResolver,
   registerLidMapping,
   resolveMentionToPhone,
   processContact,
@@ -300,8 +329,5 @@ module.exports = {
   jidToDigits,
   getLidMapSize,
   getLidMapEntries,
-  // Baru: persistensi
-  getLidFilePath,
-  saveLidToFile,
-  loadLidFromFile,
+  connectDB,
 };

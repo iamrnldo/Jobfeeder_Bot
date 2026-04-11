@@ -749,16 +749,23 @@ process.on("unhandledRejection", (reason) => {
 // ==========================================
 // MAIN
 // ==========================================
+// ==========================================
+// MAIN
+// ==========================================
 async function main() {
   console.log("╔══════════════════════════════════════╗");
-  console.log("║   🤖 BOT WA + PAKASIR QRIS          ║");
-  console.log("║   API: app.pakasir.com               ║");
+  console.log("║   🤖 BOT WA + PAKASIR QRIS           ║");
+  console.log("║   By @Iamrnldo                       ║");
   console.log("╚══════════════════════════════════════╝\n");
 
-  // Step 1: Init & restore session dari Supabase
+  // Step 1: Load LID mappings dari Supabase
+  const { initLidResolver } = require("./lid_resolver");
+  await initLidResolver();
+
+  // Step 2: Init session manager
   await initSessionManager();
 
-  // Step 2: Start bot
+  // Step 3: Start bot
   await startBot();
 }
 
