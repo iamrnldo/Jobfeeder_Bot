@@ -20,4 +20,7 @@ Thumbs.db
 # ENV — set di Koyeb env vars
 main branch/.env
 
+# Mengabaikan file .env
+.env
+
 # session/ TIDAK di-ignore — sengaja di-commit
