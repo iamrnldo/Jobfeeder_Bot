@@ -1,6 +1,7 @@
 // ==========================================
 // INDEX.JS - Backend Utama
 // ==========================================
+require("dotenv").config(); 
 
 const {
   default: makeWASocket,
