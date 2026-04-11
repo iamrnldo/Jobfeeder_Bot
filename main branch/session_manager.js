@@ -1,22 +1,19 @@
 // ==========================================
 // SESSION_MANAGER.JS
-// Simpan & restore auth_session ke/dari
-// folder session/ di repo yang sama
 // ==========================================
 
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execSync, spawnSync } = require("child_process");
 
 // ==========================================
 // PATHS
 // ==========================================
-
-// Lokasi auth_session yang dipakai bot
-const AUTH_DIR = path.resolve(__dirname, "../session");
-
-// Lokasi code bot (main branch/)
-const ROOT_DIR = path.resolve(__dirname, "..");
+// __dirname = /app/main branch/
+// session/  = /app/session/
+const MAIN_DIR = path.resolve(__dirname); // /app/main branch/
+const ROOT_DIR = path.resolve(__dirname, ".."); // /app/
+const AUTH_DIR = path.resolve(ROOT_DIR, "session"); // /app/session/
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GITHUB_REPO = process.env.GITHUB_REPO;
@@ -26,63 +23,19 @@ let isConfigured = false;
 let backupTimeout = null;
 
 // ==========================================
+// LOGGING HELPER
+// ==========================================
+function log(msg) {
+  console.log(`[SessionManager] ${msg}`);
+}
+
+// ==========================================
 // ENSURE SESSION DIR
 // ==========================================
 function ensureSessionDir() {
   if (!fs.existsSync(AUTH_DIR)) {
     fs.mkdirSync(AUTH_DIR, { recursive: true });
-    console.log(`📁 Folder session dibuat: ${AUTH_DIR}`);
-  }
-}
-
-// ==========================================
-// SETUP GIT
-// ==========================================
-function setupGit() {
-  if (!GITHUB_TOKEN || !GITHUB_REPO) {
-    console.log("ℹ️  Session manager: GITHUB_TOKEN/GITHUB_REPO tidak diset.");
-    console.log(
-      "   Session hanya tersimpan lokal (akan hilang saat redeploy).",
-    );
-    return false;
-  }
-
-  try {
-    execSync(`git config --global user.email "bot@session.com"`, {
-      stdio: "pipe",
-      cwd: ROOT_DIR,
-    });
-    execSync(`git config --global user.name "Bot Session"`, {
-      stdio: "pipe",
-      cwd: ROOT_DIR,
-    });
-
-    const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
-
-    try {
-      execSync(`git remote get-url origin`, {
-        stdio: "pipe",
-        cwd: ROOT_DIR,
-      });
-      execSync(`git remote set-url origin ${remoteUrl}`, {
-        stdio: "pipe",
-        cwd: ROOT_DIR,
-      });
-    } catch {
-      execSync(`git remote add origin ${remoteUrl}`, {
-        stdio: "pipe",
-        cwd: ROOT_DIR,
-      });
-    }
-
-    isConfigured = true;
-    console.log(`✅ Session manager aktif → backup ke GitHub (${GITHUB_REPO})`);
-    console.log(`   Branch : ${GITHUB_BRANCH}`);
-    console.log(`   Folder : session/`);
-    return true;
-  } catch (e) {
-    console.error(`❌ Setup git gagal: ${e.message}`);
-    return false;
+    log(`📁 Folder session dibuat: ${AUTH_DIR}`);
   }
 }
 
@@ -91,12 +44,287 @@ function setupGit() {
 // ==========================================
 function isSessionValid() {
   const credsPath = path.join(AUTH_DIR, "creds.json");
-  if (!fs.existsSync(credsPath)) return false;
+
+  if (!fs.existsSync(credsPath)) {
+    log(`❌ creds.json tidak ada di: ${credsPath}`);
+    return false;
+  }
 
   try {
-    const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
-    return !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
-  } catch {
+    const raw = fs.readFileSync(credsPath, "utf-8");
+    const creds = JSON.parse(raw);
+    const valid = !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
+    if (valid) {
+      log(`✅ Session valid: ${credsPath}`);
+    } else {
+      log(`⚠️ creds.json ada tapi field kosong`);
+    }
+    return valid;
+  } catch (e) {
+    log(`❌ creds.json tidak bisa dibaca: ${e.message}`);
+    return false;
+  }
+}
+
+// ==========================================
+// EXEC HELPER — tidak throw, return result
+// ==========================================
+function exec(cmd, cwd = ROOT_DIR) {
+  const result = spawnSync(cmd, {
+    shell: true,
+    cwd,
+    encoding: "utf-8",
+    timeout: 30000,
+  });
+
+  return {
+    ok: result.status === 0,
+    stdout: (result.stdout || "").trim(),
+    stderr: (result.stderr || "").trim(),
+    status: result.status,
+  };
+}
+
+// ==========================================
+// SETUP GIT CONFIG
+// ==========================================
+function setupGit() {
+  if (!GITHUB_TOKEN || !GITHUB_REPO) {
+    log("⚠️ GITHUB_TOKEN atau GITHUB_REPO tidak diset di env.");
+    log("   Session hanya tersimpan lokal.");
+    return false;
+  }
+
+  log(`🔧 Setup git config...`);
+
+  exec(`git config --global user.email "bot@whatsapp.com"`);
+  exec(`git config --global user.name "WhatsApp Bot"`);
+  exec(`git config --global --add safe.directory ${ROOT_DIR}`);
+  exec(`git config --global --add safe.directory ${MAIN_DIR}`);
+
+  const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
+
+  // Set remote
+  const hasRemote = exec(`git remote get-url origin`);
+  if (hasRemote.ok) {
+    exec(`git remote set-url origin "${remoteUrl}"`);
+  } else {
+    exec(`git remote add origin "${remoteUrl}"`);
+  }
+
+  isConfigured = true;
+  log(`✅ Git configured → ${GITHUB_REPO} (branch: ${GITHUB_BRANCH})`);
+  return true;
+}
+
+// ==========================================
+// RESTORE SESSION DARI GITHUB
+// Download file session/ langsung via GitHub API
+// ==========================================
+async function restoreSession() {
+  log("\n🔄 Mencoba restore session dari GitHub...");
+  log(`   Repo  : ${GITHUB_REPO}`);
+  log(`   Branch: ${GITHUB_BRANCH}`);
+  log(`   Folder: session/`);
+  log(`   Target: ${AUTH_DIR}`);
+
+  if (!GITHUB_TOKEN || !GITHUB_REPO) {
+    log("⚠️ Token/Repo tidak diset, skip restore.");
+    return false;
+  }
+
+  ensureSessionDir();
+
+  // Jika session sudah valid, skip restore
+  if (isSessionValid()) {
+    log("✅ Session sudah valid, skip restore dari GitHub.");
+    return true;
+  }
+
+  try {
+    // ── Cara 1: git sparse-checkout (paling reliable) ──
+    const restored = await restoreViaGit();
+    if (restored && isSessionValid()) {
+      log("✅ Session berhasil di-restore via git!");
+      return true;
+    }
+
+    // ── Cara 2: GitHub API (fallback) ──
+    log("⚠️ Git restore gagal, coba via GitHub API...");
+    const restoredApi = await restoreViaAPI();
+    if (restoredApi && isSessionValid()) {
+      log("✅ Session berhasil di-restore via GitHub API!");
+      return true;
+    }
+
+    log("❌ Restore gagal. Bot akan tampilkan QR Code.");
+    return false;
+  } catch (e) {
+    log(`❌ Restore error: ${e.message}`);
+    return false;
+  }
+}
+
+// ==========================================
+// RESTORE VIA GIT
+// ==========================================
+async function restoreViaGit() {
+  try {
+    const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
+
+    // Init git di ROOT jika belum
+    const isGitRepo = fs.existsSync(path.join(ROOT_DIR, ".git"));
+    if (!isGitRepo) {
+      log("📁 Init git repo di root...");
+      exec(`git init`, ROOT_DIR);
+      exec(`git remote add origin "${remoteUrl}"`, ROOT_DIR);
+    }
+
+    log("📥 Fetching branch dari GitHub...");
+    const fetchResult = exec(
+      `git fetch origin ${GITHUB_BRANCH} --depth=1 --no-tags`,
+      ROOT_DIR,
+    );
+
+    if (!fetchResult.ok) {
+      log(`❌ git fetch gagal: ${fetchResult.stderr}`);
+      return false;
+    }
+
+    log("📂 Checkout folder session/...");
+    const checkoutResult = exec(
+      `git checkout origin/${GITHUB_BRANCH} -- session/`,
+      ROOT_DIR,
+    );
+
+    if (!checkoutResult.ok) {
+      // Coba dengan FETCH_HEAD
+      const checkoutResult2 = exec(
+        `git checkout FETCH_HEAD -- session/`,
+        ROOT_DIR,
+      );
+      if (!checkoutResult2.ok) {
+        log(`❌ git checkout gagal: ${checkoutResult2.stderr}`);
+        return false;
+      }
+    }
+
+    // Verifikasi
+    const files = fs.existsSync(AUTH_DIR) ? fs.readdirSync(AUTH_DIR) : [];
+    log(`📂 Files di session/: ${files.length} files`);
+    return files.length > 0;
+  } catch (e) {
+    log(`❌ restoreViaGit error: ${e.message}`);
+    return false;
+  }
+}
+
+// ==========================================
+// RESTORE VIA GITHUB API
+// Download file satu per satu via API
+// ==========================================
+async function restoreViaAPI() {
+  try {
+    const https = require("https");
+
+    // Fungsi request helper
+    function httpsGet(url, headers = {}) {
+      return new Promise((resolve, reject) => {
+        const options = {
+          headers: {
+            Authorization: `token ${GITHUB_TOKEN}`,
+            "User-Agent": "WhatsApp-Bot",
+            Accept: "application/vnd.github.v3+json",
+            ...headers,
+          },
+        };
+
+        https
+          .get(url, options, (res) => {
+            let data = "";
+            res.on("data", (chunk) => (data += chunk));
+            res.on("end", () => {
+              try {
+                resolve({ status: res.statusCode, data: JSON.parse(data) });
+              } catch {
+                resolve({ status: res.statusCode, data });
+              }
+            });
+          })
+          .on("error", reject);
+      });
+    }
+
+    function httpsGetRaw(url, headers = {}) {
+      return new Promise((resolve, reject) => {
+        const options = {
+          headers: {
+            Authorization: `token ${GITHUB_TOKEN}`,
+            "User-Agent": "WhatsApp-Bot",
+            ...headers,
+          },
+        };
+
+        https
+          .get(url, options, (res) => {
+            // Handle redirect
+            if (res.statusCode === 302 || res.statusCode === 301) {
+              return httpsGetRaw(res.headers.location, {})
+                .then(resolve)
+                .catch(reject);
+            }
+
+            const chunks = [];
+            res.on("data", (chunk) => chunks.push(chunk));
+            res.on("end", () => resolve(Buffer.concat(chunks)));
+          })
+          .on("error", reject);
+      });
+    }
+
+    // Get daftar file di folder session/
+    const [owner, repo] = GITHUB_REPO.split("/");
+    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/session?ref=${GITHUB_BRANCH}`;
+
+    log(`📡 GitHub API: ${apiUrl}`);
+    const { status, data } = await httpsGet(apiUrl);
+
+    if (status !== 200) {
+      log(`❌ API error: status ${status}`);
+      if (typeof data === "object" && data.message) {
+        log(`   Message: ${data.message}`);
+      }
+      return false;
+    }
+
+    if (!Array.isArray(data)) {
+      log(`❌ API response bukan array`);
+      return false;
+    }
+
+    log(`📦 Ditemukan ${data.length} files di session/`);
+    ensureSessionDir();
+
+    // Download setiap file
+    let downloaded = 0;
+    for (const file of data) {
+      if (file.type !== "file") continue;
+
+      try {
+        const filePath = path.join(AUTH_DIR, file.name);
+        const buffer = await httpsGetRaw(file.download_url);
+        fs.writeFileSync(filePath, buffer);
+        downloaded++;
+        log(`   ✅ ${file.name} (${buffer.length} bytes)`);
+      } catch (e) {
+        log(`   ❌ Gagal download ${file.name}: ${e.message}`);
+      }
+    }
+
+    log(`📦 Downloaded: ${downloaded}/${data.length} files`);
+    return downloaded > 0;
+  } catch (e) {
+    log(`❌ restoreViaAPI error: ${e.message}`);
     return false;
   }
 }
@@ -105,128 +333,79 @@ function isSessionValid() {
 // BACKUP SESSION KE GITHUB
 // ==========================================
 async function backupSession() {
-  if (!isConfigured) return;
-
-  ensureSessionDir();
-
-  const files = fs.readdirSync(AUTH_DIR);
-  if (files.length === 0) {
-    console.log("ℹ️  Session kosong, skip backup.");
+  if (!isConfigured && !setupGit()) {
+    log("⚠️ Git tidak terkonfigurasi, skip backup.");
     return;
   }
 
+  ensureSessionDir();
+
+  const files = fs.existsSync(AUTH_DIR) ? fs.readdirSync(AUTH_DIR) : [];
+  if (files.length === 0) {
+    log("⚠️ Session kosong, skip backup.");
+    return;
+  }
+
+  log(`💾 Backing up ${files.length} session files ke GitHub...`);
+
   try {
-    console.log("💾 Backing up session ke GitHub...");
+    // Pastikan kita di branch yang benar
+    const currentBranch = exec(`git rev-parse --abbrev-ref HEAD`, ROOT_DIR);
+    log(`   Current branch: ${currentBranch.stdout}`);
 
     // Add folder session/
-    execSync(`git add session/ -f`, {
-      stdio: "pipe",
-      cwd: ROOT_DIR,
-    });
-
-    // Cek ada perubahan
-    let hasChanges = false;
-    try {
-      const status = execSync(`git status --porcelain session/`, {
-        stdio: "pipe",
-        cwd: ROOT_DIR,
-      }).toString();
-      hasChanges = !!status.trim();
-    } catch {
-      hasChanges = true;
+    const addResult = exec(`git add session/ -f`, ROOT_DIR);
+    if (!addResult.ok) {
+      log(`⚠️ git add warning: ${addResult.stderr}`);
     }
 
-    if (!hasChanges) {
-      console.log("ℹ️  Session tidak berubah, skip backup.");
+    // Cek ada perubahan
+    const statusResult = exec(`git status --porcelain session/`, ROOT_DIR);
+    if (!statusResult.stdout.trim()) {
+      log("ℹ️  Session tidak berubah, skip backup.");
       return;
     }
 
     // Commit
     const timestamp = new Date().toISOString();
-    execSync(`git commit -m "session: backup ${timestamp}"`, {
-      stdio: "pipe",
-      cwd: ROOT_DIR,
-    });
+    const commitResult = exec(
+      `git commit -m "session: backup ${timestamp}"`,
+      ROOT_DIR,
+    );
+
+    if (
+      !commitResult.ok &&
+      !commitResult.stdout.includes("nothing to commit")
+    ) {
+      log(`⚠️ git commit: ${commitResult.stderr}`);
+    }
 
     // Push
-    execSync(`git push origin HEAD:${GITHUB_BRANCH} --force`, {
-      stdio: "pipe",
-      cwd: ROOT_DIR,
-    });
-
-    console.log(
-      `✅ Session berhasil di-backup ke GitHub branch '${GITHUB_BRANCH}'`,
+    const pushResult = exec(
+      `git push origin HEAD:${GITHUB_BRANCH} --force`,
+      ROOT_DIR,
     );
-  } catch (e) {
-    if (!e.message.includes("nothing to commit")) {
-      console.warn(`⚠️ Backup session gagal: ${e.message}`);
+
+    if (pushResult.ok) {
+      log(`✅ Session berhasil di-backup ke GitHub!`);
+      log(`   Branch: ${GITHUB_BRANCH}`);
+      log(`   Files : ${files.length}`);
+    } else {
+      log(`❌ Push gagal: ${pushResult.stderr}`);
     }
+  } catch (e) {
+    log(`❌ Backup error: ${e.message}`);
   }
 }
 
 // ==========================================
-// SCHEDULE BACKUP (debounced 5 detik)
+// SCHEDULE BACKUP (debounced)
 // ==========================================
 function scheduleBackup(delayMs = 5000) {
   if (backupTimeout) clearTimeout(backupTimeout);
   backupTimeout = setTimeout(() => {
-    backupSession().catch((e) =>
-      console.warn(`⚠️ scheduleBackup error: ${e.message}`),
-    );
+    backupSession().catch((e) => log(`⚠️ scheduleBackup error: ${e.message}`));
   }, delayMs);
-}
-
-// ==========================================
-// RESTORE SESSION DARI GITHUB
-// ==========================================
-async function restoreSession() {
-  if (!GITHUB_TOKEN || !GITHUB_REPO) return false;
-
-  ensureSessionDir();
-
-  // Jika session sudah valid, tidak perlu restore
-  if (isSessionValid()) {
-    console.log("✅ Session sudah ada dan valid, skip restore.");
-    return true;
-  }
-
-  try {
-    console.log(`🔄 Mencoba restore session dari GitHub...`);
-    console.log(`   Repo  : ${GITHUB_REPO}`);
-    console.log(`   Branch: ${GITHUB_BRANCH}`);
-    console.log(`   Folder: session/`);
-
-    const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
-
-    // Fetch branch
-    execSync(
-      `git fetch ${remoteUrl} ${GITHUB_BRANCH}:refs/remotes/origin_session --depth=1`,
-      {
-        stdio: "pipe",
-        cwd: ROOT_DIR,
-      },
-    );
-
-    // Checkout folder session/ dari branch
-    execSync(`git checkout refs/remotes/origin_session -- session/`, {
-      stdio: "pipe",
-      cwd: ROOT_DIR,
-    });
-
-    // Verifikasi
-    if (isSessionValid()) {
-      const files = fs.readdirSync(AUTH_DIR);
-      console.log(`✅ Session berhasil di-restore! (${files.length} files)`);
-      return true;
-    } else {
-      console.log("⚠️ Restore selesai tapi session tidak valid.");
-      return false;
-    }
-  } catch (e) {
-    console.log(`ℹ️  Tidak bisa restore session: ${e.message}`);
-    console.log("   → Bot akan tampilkan QR Code untuk scan.");
-    return false;
-  }
 }
 
 // ==========================================
@@ -237,25 +416,28 @@ async function initSessionManager() {
   console.log("║   🔐 SESSION MANAGER                 ║");
   console.log("╚══════════════════════════════════════╝");
 
+  log(`ROOT_DIR : ${ROOT_DIR}`);
+  log(`AUTH_DIR : ${AUTH_DIR}`);
+  log(`REPO     : ${GITHUB_REPO || "tidak diset"}`);
+  log(`BRANCH   : ${GITHUB_BRANCH}`);
+
   ensureSessionDir();
+  setupGit();
 
-  const gitOk = setupGit();
-
-  if (gitOk) {
-    const restored = await restoreSession();
-    return restored;
-  }
-
-  // Jika git tidak dikonfigurasi, cek session lokal
+  // Cek session lokal dulu
   if (isSessionValid()) {
-    console.log("✅ Session lokal ditemukan dan valid.");
+    log("✅ Session lokal valid, tidak perlu restore.");
     return true;
   }
 
-  console.log("ℹ️  Tidak ada session — bot akan tampilkan QR Code.");
-  return false;
+  // Restore dari GitHub
+  const restored = await restoreSession();
+  return restored;
 }
 
+// ==========================================
+// EXPORTS
+// ==========================================
 module.exports = {
   initSessionManager,
   scheduleBackup,
