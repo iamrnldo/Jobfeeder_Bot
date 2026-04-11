@@ -34,7 +34,12 @@ const {
   jidToDigits,
   getLidMapSize,
 } = require("./lid_resolver");
-const { initSessionManager, scheduleBackup } = require("./session_manager");
+const {
+  initSessionManager,
+  scheduleBackup,
+  backupSession,
+  AUTH_DIR,
+} = require("./session_manager");
 
 // ==========================================
 // PATHS & KONFIGURASI
@@ -42,12 +47,13 @@ const { initSessionManager, scheduleBackup } = require("./session_manager");
 const logger = pino({ level: "silent" });
 const PORT = process.env.PORT || 8080;
 
-const AUTH_DIR = path.resolve("./auth_session");
-const STORE_PATH = path.resolve("./store.json");
-const STORE_BACKUP_PATH = path.resolve("./store_backup.json");
+// AUTH_DIR dari session_manager = ../session/
+// STORE di dalam main branch/
+const STORE_PATH = path.resolve(__dirname, "store.json");
+const STORE_BACKUP_PATH = path.resolve(__dirname, "store_backup.json");
 
 // ==========================================
-// ENSURE DIRECTORIES EXIST
+// ENSURE DIRECTORIES
 // ==========================================
 function ensureDirectories() {
   if (!fs.existsSync(AUTH_DIR)) {
@@ -133,7 +139,6 @@ const server = http.createServer(async (req, res) => {
   const url = req.url;
   const method = req.method;
 
-  // ── Webhook Pakasir ──
   if (url === "/webhook/pakasir" && method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk.toString()));
@@ -168,7 +173,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Ping / Health ──
   if (url === "/ping" || url === "/") {
     botStatus.lastPing = new Date();
     botStatus.pingCount++;
@@ -193,7 +197,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Status Dashboard ──
   if (url === "/status") {
     const all = pakasir.loadOrders();
     const completed = all.filter((o) => o.status === "completed");
@@ -476,44 +479,18 @@ async function scanGroupForLidMapping(sock, groupJid) {
 }
 
 // ==========================================
-// CEK SESSION VALID
-// ==========================================
-function isSessionExists() {
-  if (!fs.existsSync(AUTH_DIR)) return false;
-
-  const files = fs.readdirSync(AUTH_DIR);
-  const hasCreds = files.some((f) => f === "creds.json");
-
-  if (hasCreds) {
-    try {
-      const creds = JSON.parse(
-        fs.readFileSync(path.join(AUTH_DIR, "creds.json"), "utf-8"),
-      );
-      const isValid = !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
-      if (!isValid) {
-        console.warn("⚠️ creds.json ada tapi tidak valid");
-      }
-      return isValid;
-    } catch (e) {
-      console.warn(`⚠️ creds.json tidak bisa dibaca: ${e.message}`);
-      return false;
-    }
-  }
-
-  return false;
-}
-
-// ==========================================
 // START BOT
 // ==========================================
 async function startBot() {
   ensureDirectories();
 
-  const sessionExists = isSessionExists();
+  const credsPath = path.join(AUTH_DIR, "creds.json");
+  const sessionExists = fs.existsSync(credsPath);
+
   console.log(
     sessionExists
-      ? "🔑 Session ditemukan — mencoba resume tanpa scan QR..."
-      : "📱 Session tidak ditemukan — akan tampilkan QR Code...",
+      ? `🔑 Session ditemukan di ${AUTH_DIR} — resume...`
+      : `📱 Session tidak ada — tampilkan QR Code...`,
   );
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -550,7 +527,6 @@ async function startBot() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
 
-    // ── Tampilkan QR ──
     if (qr) {
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   📱 SCAN QR CODE DI BAWAH INI      ║");
@@ -559,7 +535,6 @@ async function startBot() {
       console.log("\n⚠️  QR Code berlaku ~20 detik, scan cepat!\n");
     }
 
-    // ── Berhasil connect ──
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
@@ -577,7 +552,6 @@ async function startBot() {
       console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
       console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}\n`);
 
-      // Register bot ke LID map
       if (sock.user?.id && sock.user?.lid) {
         const botPhone = jidToDigits(sock.user.id);
         if (botPhone.length >= 8) {
@@ -585,7 +559,7 @@ async function startBot() {
         }
       }
 
-      // ── Backup session segera setelah login baru ──
+      // Backup segera setelah login baru
       if (isNewLogin) {
         console.log("💾 Login baru — backup session ke GitHub...");
         scheduleBackup(3000);
@@ -617,7 +591,6 @@ async function startBot() {
       }, 5000);
     }
 
-    // ── Koneksi terputus ──
     if (connection === "close") {
       botStatus.connected = false;
       activeSock = null;
@@ -647,17 +620,14 @@ async function startBot() {
             fs.unlinkSync(path.join(AUTH_DIR, file));
           }
           console.log("✅ Session lama dihapus.");
-          console.log("🔄 Restart untuk scan QR baru...");
         } catch (e) {
           console.error(`❌ Gagal hapus session: ${e.message}`);
         }
 
-        // Reconnect untuk tampilkan QR baru
         await scheduleReconnect(3000);
         return;
       }
 
-      // Error lain: reconnect otomatis
       await scheduleReconnect(3000);
     }
   });
@@ -668,8 +638,6 @@ async function startBot() {
   sock.ev.on("creds.update", async () => {
     await saveCreds();
     console.log("💾 Credentials tersimpan.");
-
-    // Auto backup ke GitHub setiap creds berubah
     scheduleBackup(5000);
   });
 
@@ -753,9 +721,7 @@ async function gracefulShutdown(signal) {
     console.error(`⚠️ Gagal simpan store: ${e.message}`);
   }
 
-  // Backup session sebelum shutdown
   try {
-    const { backupSession } = require("./session_manager");
     await backupSession();
     console.log("💾 Session di-backup sebelum shutdown.");
   } catch (e) {
@@ -778,7 +744,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 // ==========================================
-// MAIN — Entry Point
+// MAIN
 // ==========================================
 async function main() {
   console.log("╔══════════════════════════════════════╗");
@@ -786,12 +752,10 @@ async function main() {
   console.log("║   API: app.pakasir.com               ║");
   console.log("╚══════════════════════════════════════╝\n");
 
-  // ── Step 1: Init session manager ──
-  // Restore session dari GitHub jika ada
-  console.log("🔄 Initializing session manager...");
+  // Step 1: Init & restore session
   await initSessionManager();
 
-  // ── Step 2: Start bot ──
+  // Step 2: Start bot
   await startBot();
 }
 

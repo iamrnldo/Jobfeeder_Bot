@@ -1,20 +1,42 @@
-// session_manager.js
-// Auto backup auth_session ke GitHub setiap kali creds berubah
+// ==========================================
+// SESSION_MANAGER.JS
+// Simpan & restore auth_session ke/dari
+// folder session/ di repo yang sama
+// ==========================================
 
-const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-
-const AUTH_DIR = path.resolve("./auth_session");
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
-const GITHUB_REPO = process.env.GITHUB_REPO; // format: username/repo-name
-const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "session";
-
-let backupTimeout = null;
-let isConfigured = false;
+const { execSync } = require("child_process");
 
 // ==========================================
-// SETUP GIT CONFIG
+// PATHS
+// ==========================================
+
+// Lokasi auth_session yang dipakai bot
+const AUTH_DIR = path.resolve(__dirname, "../session");
+
+// Lokasi code bot (main branch/)
+const ROOT_DIR = path.resolve(__dirname, "..");
+
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const GITHUB_REPO = process.env.GITHUB_REPO;
+const GITHUB_BRANCH = process.env.GITHUB_BRANCH || "master";
+
+let isConfigured = false;
+let backupTimeout = null;
+
+// ==========================================
+// ENSURE SESSION DIR
+// ==========================================
+function ensureSessionDir() {
+  if (!fs.existsSync(AUTH_DIR)) {
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
+    console.log(`📁 Folder session dibuat: ${AUTH_DIR}`);
+  }
+}
+
+// ==========================================
+// SETUP GIT
 // ==========================================
 function setupGit() {
   if (!GITHUB_TOKEN || !GITHUB_REPO) {
@@ -26,40 +48,55 @@ function setupGit() {
   }
 
   try {
-    // Set git config
     execSync(`git config --global user.email "bot@session.com"`, {
       stdio: "pipe",
+      cwd: ROOT_DIR,
     });
-    execSync(`git config --global user.name "Bot Session"`, { stdio: "pipe" });
+    execSync(`git config --global user.name "Bot Session"`, {
+      stdio: "pipe",
+      cwd: ROOT_DIR,
+    });
 
-    // Set remote dengan token
     const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
 
-    // Cek apakah remote sudah ada
     try {
-      execSync(`git remote get-url origin`, { stdio: "pipe" });
-      execSync(`git remote set-url origin ${remoteUrl}`, { stdio: "pipe" });
-    } catch {
-      execSync(`git remote add origin ${remoteUrl}`, { stdio: "pipe" });
-    }
-
-    // Cek/buat branch session
-    try {
-      execSync(`git fetch origin ${GITHUB_BRANCH} --depth=1`, {
+      execSync(`git remote get-url origin`, {
         stdio: "pipe",
+        cwd: ROOT_DIR,
       });
-      console.log(`✅ Git session branch '${GITHUB_BRANCH}' ditemukan.`);
+      execSync(`git remote set-url origin ${remoteUrl}`, {
+        stdio: "pipe",
+        cwd: ROOT_DIR,
+      });
     } catch {
-      console.log(
-        `ℹ️  Branch '${GITHUB_BRANCH}' belum ada, akan dibuat saat backup pertama.`,
-      );
+      execSync(`git remote add origin ${remoteUrl}`, {
+        stdio: "pipe",
+        cwd: ROOT_DIR,
+      });
     }
 
     isConfigured = true;
     console.log(`✅ Session manager aktif → backup ke GitHub (${GITHUB_REPO})`);
+    console.log(`   Branch : ${GITHUB_BRANCH}`);
+    console.log(`   Folder : session/`);
     return true;
   } catch (e) {
     console.error(`❌ Setup git gagal: ${e.message}`);
+    return false;
+  }
+}
+
+// ==========================================
+// CEK SESSION VALID
+// ==========================================
+function isSessionValid() {
+  const credsPath = path.join(AUTH_DIR, "creds.json");
+  if (!fs.existsSync(credsPath)) return false;
+
+  try {
+    const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
+    return !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
+  } catch {
     return false;
   }
 }
@@ -69,44 +106,58 @@ function setupGit() {
 // ==========================================
 async function backupSession() {
   if (!isConfigured) return;
-  if (!fs.existsSync(AUTH_DIR)) return;
+
+  ensureSessionDir();
 
   const files = fs.readdirSync(AUTH_DIR);
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    console.log("ℹ️  Session kosong, skip backup.");
+    return;
+  }
 
   try {
     console.log("💾 Backing up session ke GitHub...");
 
-    // Add auth_session files
-    execSync(`git add auth_session/ -f`, { stdio: "pipe" });
-
-    // Cek apakah ada perubahan
-    const status = execSync(`git status --porcelain auth_session/`, {
+    // Add folder session/
+    execSync(`git add session/ -f`, {
       stdio: "pipe",
-    }).toString();
+      cwd: ROOT_DIR,
+    });
 
-    if (!status.trim()) {
-      // Tidak ada perubahan
+    // Cek ada perubahan
+    let hasChanges = false;
+    try {
+      const status = execSync(`git status --porcelain session/`, {
+        stdio: "pipe",
+        cwd: ROOT_DIR,
+      }).toString();
+      hasChanges = !!status.trim();
+    } catch {
+      hasChanges = true;
+    }
+
+    if (!hasChanges) {
+      console.log("ℹ️  Session tidak berubah, skip backup.");
       return;
     }
 
     // Commit
     const timestamp = new Date().toISOString();
-    execSync(`git commit -m "session: backup ${timestamp}"`, { stdio: "pipe" });
+    execSync(`git commit -m "session: backup ${timestamp}"`, {
+      stdio: "pipe",
+      cwd: ROOT_DIR,
+    });
 
-    // Push ke branch session
-    try {
-      execSync(`git push origin HEAD:${GITHUB_BRANCH}`, { stdio: "pipe" });
-      console.log(`✅ Session berhasil di-backup ke branch '${GITHUB_BRANCH}'`);
-    } catch {
-      // Branch belum ada, buat baru
-      execSync(`git push origin HEAD:${GITHUB_BRANCH} --force`, {
-        stdio: "pipe",
-      });
-      console.log(`✅ Session branch '${GITHUB_BRANCH}' dibuat dan di-push`);
-    }
+    // Push
+    execSync(`git push origin HEAD:${GITHUB_BRANCH} --force`, {
+      stdio: "pipe",
+      cwd: ROOT_DIR,
+    });
+
+    console.log(
+      `✅ Session berhasil di-backup ke GitHub branch '${GITHUB_BRANCH}'`,
+    );
   } catch (e) {
-    // Jangan crash jika backup gagal
     if (!e.message.includes("nothing to commit")) {
       console.warn(`⚠️ Backup session gagal: ${e.message}`);
     }
@@ -114,48 +165,9 @@ async function backupSession() {
 }
 
 // ==========================================
-// RESTORE SESSION DARI GITHUB
-// ==========================================
-async function restoreSession() {
-  if (!GITHUB_TOKEN || !GITHUB_REPO) return false;
-
-  try {
-    console.log(
-      `🔄 Mencoba restore session dari GitHub branch '${GITHUB_BRANCH}'...`,
-    );
-
-    const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
-
-    // Fetch branch session
-    execSync(
-      `git fetch ${remoteUrl} ${GITHUB_BRANCH}:refs/remotes/session_remote --depth=1`,
-      { stdio: "pipe" },
-    );
-
-    // Checkout auth_session dari branch session
-    execSync(`git checkout refs/remotes/session_remote -- auth_session/`, {
-      stdio: "pipe",
-    });
-
-    // Verifikasi
-    if (fs.existsSync(path.join(AUTH_DIR, "creds.json"))) {
-      console.log("✅ Session berhasil di-restore dari GitHub!");
-      return true;
-    } else {
-      console.log("⚠️ Restore selesai tapi creds.json tidak ditemukan.");
-      return false;
-    }
-  } catch (e) {
-    console.log(`ℹ️  Tidak bisa restore session: ${e.message}`);
-    return false;
-  }
-}
-
-// ==========================================
-// SCHEDULE BACKUP (debounced)
+// SCHEDULE BACKUP (debounced 5 detik)
 // ==========================================
 function scheduleBackup(delayMs = 5000) {
-  // Debounce — jangan backup terlalu sering
   if (backupTimeout) clearTimeout(backupTimeout);
   backupTimeout = setTimeout(() => {
     backupSession().catch((e) =>
@@ -165,17 +177,82 @@ function scheduleBackup(delayMs = 5000) {
 }
 
 // ==========================================
-// INIT
+// RESTORE SESSION DARI GITHUB
+// ==========================================
+async function restoreSession() {
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return false;
+
+  ensureSessionDir();
+
+  // Jika session sudah valid, tidak perlu restore
+  if (isSessionValid()) {
+    console.log("✅ Session sudah ada dan valid, skip restore.");
+    return true;
+  }
+
+  try {
+    console.log(`🔄 Mencoba restore session dari GitHub...`);
+    console.log(`   Repo  : ${GITHUB_REPO}`);
+    console.log(`   Branch: ${GITHUB_BRANCH}`);
+    console.log(`   Folder: session/`);
+
+    const remoteUrl = `https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git`;
+
+    // Fetch branch
+    execSync(
+      `git fetch ${remoteUrl} ${GITHUB_BRANCH}:refs/remotes/origin_session --depth=1`,
+      {
+        stdio: "pipe",
+        cwd: ROOT_DIR,
+      },
+    );
+
+    // Checkout folder session/ dari branch
+    execSync(`git checkout refs/remotes/origin_session -- session/`, {
+      stdio: "pipe",
+      cwd: ROOT_DIR,
+    });
+
+    // Verifikasi
+    if (isSessionValid()) {
+      const files = fs.readdirSync(AUTH_DIR);
+      console.log(`✅ Session berhasil di-restore! (${files.length} files)`);
+      return true;
+    } else {
+      console.log("⚠️ Restore selesai tapi session tidak valid.");
+      return false;
+    }
+  } catch (e) {
+    console.log(`ℹ️  Tidak bisa restore session: ${e.message}`);
+    console.log("   → Bot akan tampilkan QR Code untuk scan.");
+    return false;
+  }
+}
+
+// ==========================================
+// INIT SESSION MANAGER
 // ==========================================
 async function initSessionManager() {
+  console.log("\n╔══════════════════════════════════════╗");
+  console.log("║   🔐 SESSION MANAGER                 ║");
+  console.log("╚══════════════════════════════════════╝");
+
+  ensureSessionDir();
+
   const gitOk = setupGit();
 
   if (gitOk) {
-    // Coba restore dulu sebelum bot start
     const restored = await restoreSession();
     return restored;
   }
 
+  // Jika git tidak dikonfigurasi, cek session lokal
+  if (isSessionValid()) {
+    console.log("✅ Session lokal ditemukan dan valid.");
+    return true;
+  }
+
+  console.log("ℹ️  Tidak ada session — bot akan tampilkan QR Code.");
   return false;
 }
 
@@ -184,4 +261,6 @@ module.exports = {
   scheduleBackup,
   backupSession,
   restoreSession,
+  isSessionValid,
+  AUTH_DIR,
 };

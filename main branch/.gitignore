@@ -1,0 +1,23 @@
+# Dependencies
+main branch/node_modules/
+
+# Store cache
+main branch/store.json
+main branch/store_backup.json
+
+# Logs
+*.log
+main branch/logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# ENV — set di Koyeb env vars
+main branch/.env
+
+# session/ TIDAK di-ignore — sengaja di-commit
