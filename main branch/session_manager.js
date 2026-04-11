@@ -307,3 +307,5 @@ module.exports = {
   isSessionValid,
   AUTH_DIR,
 };
+
+//is fixed
