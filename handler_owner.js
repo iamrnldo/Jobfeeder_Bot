@@ -76,12 +76,8 @@ function getOwnerMenuSection() {
     title: "👑 Owner Panel",
     highlight_label: "Owner Only",
     rows: [
-      {
-        header: "📢",
-        title: "Broadcast Group",
-        description: "Kirim announce ke beberapa group",
-        id: "announce_start",
-      },
+      // ❌ HAPUS baris announce dari sini
+      // announce akan ditambah di sendMainMenu() HANYA jika isPrivate
       {
         header: "👥",
         title: "Manajemen Admin Bot",

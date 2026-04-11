@@ -493,11 +493,27 @@ async function handleMessage(sock, msg) {
       case "owner":
       case "/owner":
       case "panel_owner": {
-        if (!isOwner(senderNumber)) {
-          await sock.sendMessage(jid, {
-            text: "⛔ *AKSES DITOLAK*\n\nHanya Owner yang bisa akses panel ini.",
-          });
-          break;
+        // ── Section Owner ──
+        if (_isOwner) {
+          const ownerSection = owner.getOwnerMenuSection();
+
+          // ✅ Tambahkan menu announce HANYA di private chat
+          if (isPrivate) {
+            ownerSection.rows.push({
+              header: "📢",
+              title: "Broadcast Group",
+              description: "Kirim pesan ke beberapa group",
+              id: "announce_start",
+            });
+            ownerSection.rows.push({
+              header: "📋",
+              title: "Riwayat Broadcast",
+              description: "Lihat history broadcast",
+              id: "announce_history",
+            });
+          }
+
+          sections.push(ownerSection);
         }
         await sendMainMenu(sock, msg, jid, sender, senderNumber);
         break;
@@ -509,11 +525,26 @@ async function handleMessage(sock, msg) {
       case "admin":
       case "/admin":
       case "panel_admin": {
-        if (!isAdminBot(senderNumber) && !isOwner(senderNumber)) {
-          await sock.sendMessage(jid, {
-            text: "⛔ *AKSES DITOLAK*\n\nHanya Admin Bot.",
-          });
-          break;
+        if (_isAdminBot && !_isOwner) {
+          const adminSection = adminBot.getAdminBotMenuSection(senderNumber);
+
+          // ✅ Tambahkan menu announce HANYA di private chat
+          if (isPrivate) {
+            adminSection.rows.push({
+              header: "📢",
+              title: "Broadcast Group",
+              description: "Kirim pesan ke beberapa group",
+              id: "announce_start",
+            });
+            adminSection.rows.push({
+              header: "📋",
+              title: "Riwayat Broadcast",
+              description: "Lihat history broadcast",
+              id: "announce_history",
+            });
+          }
+
+          sections.push(adminSection);
         }
         await sendMainMenu(sock, msg, jid, sender, senderNumber);
         break;

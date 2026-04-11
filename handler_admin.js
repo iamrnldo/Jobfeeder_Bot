@@ -37,12 +37,8 @@ function getAdminBotMenuSection(senderNumber) {
     title: "🛡️ Panel Admin Bot",
     highlight_label: "Admin Only",
     rows: [
-      {
-        header: "📢",
-        title: "Broadcast Group",
-        description: "Kirim announce ke beberapa group",
-        id: "announce_start",
-      },
+      // ❌ HAPUS baris announce dari sini
+      // announce akan ditambah di sendMainMenu() HANYA jika isPrivate
       {
         header: "📋",
         title: "Daftar Admin Bot",

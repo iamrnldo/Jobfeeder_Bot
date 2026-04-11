@@ -1,336 +1,246 @@
 // ==========================================
-//  HANDLER_GROUPANNOUNCE.JS
-//  Broadcast/Announce ke beberapa group
-//  Support: text, foto, audio, video, file
+// HANDLER_GROUPANNOUNCE.JS - Broadcast/Announce
 // ==========================================
 
 const fs = require("fs");
 const path = require("path");
-const config = require("./config");
-const { isOwner, isAdminBot, jidToDigits } = require("./handler_owner");
-const { findBotInParticipants } = require("./handler_admin_group");
+const { isOwner, isAdminBot } = require("./handler_owner");
+
+const ANNOUNCE_DB_PATH = path.join(
+  __dirname,
+  "database",
+  "announce_history.json",
+);
+const ANNOUNCE_DB_DIR = path.join(__dirname, "database");
 
 // ==========================================
-// STATE MAP
+// STATE MANAGEMENT
 // ==========================================
+// Map: senderNumber → { step, selectedGroups, message, mediaMsg, type }
 const announceState = new Map();
 
 // ==========================================
-// HELPERS
+// DATABASE HELPERS
 // ==========================================
-function isAllowedSender(senderNumber) {
-  return isOwner(senderNumber) || isAdminBot(senderNumber);
-}
-
-function clearState(senderNumber) {
-  announceState.delete(senderNumber);
-}
-
-function getState(senderNumber) {
-  return announceState.get(senderNumber);
-}
-
-function setState(senderNumber, data) {
-  announceState.set(senderNumber, {
-    ...data,
-    timestamp: Date.now(),
-  });
-}
-
-function isStateExpired(state) {
-  if (!state) return true;
-  return Date.now() - state.timestamp > 15 * 60 * 1000;
-}
-
-function formatSize(bytes) {
-  if (!bytes) return "0 B";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function delay(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-// ==========================================
-// DOWNLOAD MEDIA + TIMEOUT
-// ==========================================
-async function downloadMedia(sock, msg, timeoutMs = 60000) {
-  const { downloadMediaMessage } = require("atexovi-baileys");
-
-  const logger = {
-    info: () => {},
-    error: console.error,
-    warn: () => {},
-    debug: () => {},
-    trace: () => {},
-    child: function () {
-      return this;
-    },
-  };
-
-  let timeoutHandle;
-
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutHandle = setTimeout(() => {
-      reject(
-        new Error(
-          `Download timeout setelah ${timeoutMs / 1000} detik.\n` +
-            `Coba kirim ulang atau gunakan file yang lebih kecil.`,
-        ),
-      );
-    }, timeoutMs);
-  });
-
-  try {
-    const buffer = await Promise.race([
-      downloadMediaMessage(
-        msg,
-        "buffer",
-        {},
-        { logger, reuploadRequest: sock.updateMediaMessage },
-      ),
-      timeoutPromise,
-    ]);
-    clearTimeout(timeoutHandle);
-    return buffer;
-  } catch (err) {
-    clearTimeout(timeoutHandle);
-    throw err;
+function ensureDb() {
+  if (!fs.existsSync(ANNOUNCE_DB_DIR)) {
+    fs.mkdirSync(ANNOUNCE_DB_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(ANNOUNCE_DB_PATH)) {
+    fs.writeFileSync(ANNOUNCE_DB_PATH, "[]");
   }
 }
 
-// ==========================================
-// MENU SECTION
-// ==========================================
-function getAnnounceMenuSection() {
-  return {
-    title: "📢 Broadcast Group",
-    highlight_label: "Admin Only",
-    rows: [
-      {
-        header: "📢",
-        title: "Buat Announcement",
-        description: "Kirim pesan ke beberapa group sekaligus",
-        id: "announce_start",
-      },
-      {
-        header: "📋",
-        title: "Riwayat Broadcast",
-        description: "Lihat history broadcast terakhir",
-        id: "announce_history",
-      },
-    ],
-  };
-}
-
-// ==========================================
-// HISTORY
-// ==========================================
-const HISTORY_PATH = path.join(__dirname, "database", "announce_history.json");
-
 function loadHistory() {
+  ensureDb();
   try {
-    const dir = path.dirname(HISTORY_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    if (!fs.existsSync(HISTORY_PATH)) {
-      fs.writeFileSync(HISTORY_PATH, "[]");
-      return [];
-    }
-    return JSON.parse(fs.readFileSync(HISTORY_PATH, "utf-8"));
+    return JSON.parse(fs.readFileSync(ANNOUNCE_DB_PATH, "utf-8"));
   } catch {
     return [];
   }
 }
 
-function saveHistory(entry) {
+function saveHistory(history) {
+  ensureDb();
+  fs.writeFileSync(ANNOUNCE_DB_PATH, JSON.stringify(history, null, 2));
+}
+
+function addHistory(entry) {
   const history = loadHistory();
-  history.unshift(entry);
-  fs.writeFileSync(HISTORY_PATH, JSON.stringify(history.slice(0, 50), null, 2));
+  history.unshift({
+    ...entry,
+    id: `ANN_${Date.now()}`,
+    createdAt: new Date().toISOString(),
+  });
+  // Simpan max 50 history
+  if (history.length > 50) history.splice(50);
+  saveHistory(history);
 }
 
 // ==========================================
-// STEP 1: START
+// HELPER: Get All Groups Bot Is In
+// ==========================================
+async function getAllGroups(sock) {
+  try {
+    const groups = [];
+
+    // Cara 1: dari store.chats
+    if (sock.store?.chats) {
+      const chatIds = Object.keys(sock.store.chats);
+      for (const id of chatIds) {
+        if (id.endsWith("@g.us")) {
+          try {
+            const meta = await sock.groupMetadata(id);
+            if (meta) {
+              groups.push({
+                id: meta.id,
+                name: meta.subject || id,
+                participants: meta.participants?.length || 0,
+              });
+            }
+          } catch (e) {
+            // Skip grup yang tidak bisa diakses
+          }
+        }
+      }
+    }
+
+    // Cara 2: fallback dari groupFetchAllParticipating
+    if (groups.length === 0) {
+      try {
+        const allGroups = await sock.groupFetchAllParticipating();
+        for (const [id, meta] of Object.entries(allGroups)) {
+          groups.push({
+            id,
+            name: meta.subject || id,
+            participants: meta.participants?.length || 0,
+          });
+        }
+      } catch (e) {
+        console.error("❌ groupFetchAllParticipating error:", e.message);
+      }
+    }
+
+    return groups;
+  } catch (e) {
+    console.error("❌ getAllGroups error:", e.message);
+    return [];
+  }
+}
+
+// ==========================================
+// STEP 1: START ANNOUNCE — Tampilkan daftar grup
 // ==========================================
 async function handleAnnounceStart(sock, jid, senderNumber) {
-  if (!isAllowedSender(senderNumber)) {
+  // Double check: hanya private chat
+  if (!jid.endsWith("@s.whatsapp.net")) {
+    await sock.sendMessage(jid, {
+      text:
+        `📢 *BROADCAST*\n\n` +
+        `⚠️ Fitur ini hanya bisa digunakan di *private chat*.\n\n` +
+        `Silakan chat bot secara langsung untuk menggunakan fitur broadcast.`,
+    });
+    return;
+  }
+
+  if (!isOwner(senderNumber) && !isAdminBot(senderNumber)) {
     await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
     return;
   }
 
-  clearState(senderNumber);
-  await sock.sendMessage(jid, { text: `⏳ *Mengambil daftar group...*` });
+  await sock.sendMessage(jid, { text: "⏳ _Mengambil daftar grup..._" });
 
-  let availableGroups = [];
-  try {
-    const groups = await sock.groupFetchAllParticipating();
-    const groupList = Object.values(groups);
+  const groups = await getAllGroups(sock);
 
-    for (const g of groupList) {
-      let participants = g.participants || [];
-      let groupName = g.subject || "Unknown";
-      let botIsAdmin = false;
-      let memberCount = participants.length;
-
-      try {
-        const fresh = await sock.groupMetadata(g.id);
-        participants = fresh.participants || participants;
-        groupName = fresh.subject || groupName;
-        memberCount = participants.length;
-      } catch (e) {}
-
-      const botP = findBotInParticipants(participants);
-      if (botP) {
-        botIsAdmin = botP.admin === "admin" || botP.admin === "superadmin";
-      }
-
-      availableGroups.push({
-        jid: g.id,
-        name: groupName,
-        memberCount,
-        botIsAdmin,
-      });
-    }
-  } catch (e) {
+  if (groups.length === 0) {
     await sock.sendMessage(jid, {
-      text: `❌ Gagal mengambil daftar group: ${e.message}`,
+      text:
+        `📢 *BROADCAST*\n\n` +
+        `❌ Bot tidak berada di grup manapun.\n\n` +
+        `Tambahkan bot ke grup terlebih dahulu.`,
     });
     return;
   }
 
-  if (availableGroups.length === 0) {
-    await sock.sendMessage(jid, {
-      text: `❌ *Bot tidak ada di group manapun.*`,
-    });
-    return;
-  }
-
-  setState(senderNumber, {
+  // Inisialisasi state
+  announceState.set(senderNumber, {
     step: "select_groups",
-    jid,
-    selectedGroups: [],
-    availableGroups,
-    content: null,
+    groups, // semua grup tersedia
+    selectedGroups: new Set(), // grup yang dipilih
+    message: null,
+    mediaMsg: null,
+    type: null,
   });
 
   await sendGroupSelectionMenu(sock, jid, senderNumber);
 }
 
 // ==========================================
-// MENU PILIH GROUP
+// TAMPILKAN MENU PILIH GRUP
 // ==========================================
 async function sendGroupSelectionMenu(sock, jid, senderNumber) {
-  const state = getState(senderNumber);
+  const state = announceState.get(senderNumber);
   if (!state) return;
 
-  const { availableGroups, selectedGroups } = state;
-  const adminGroups = availableGroups.filter((g) => g.botIsAdmin);
-  const nonAdminGroups = availableGroups.filter((g) => !g.botIsAdmin);
-  const selectedCount = selectedGroups.length;
-  const totalGroups = availableGroups.length;
+  const { groups, selectedGroups } = state;
 
-  const adminRows = adminGroups.slice(0, 8).map((g) => {
-    const isSelected = selectedGroups.includes(g.jid);
-    const shortName =
-      g.name.length > 18 ? g.name.substring(0, 18) + "…" : g.name;
+  // Buat rows untuk list
+  const rows = groups.map((g, i) => {
+    const isSelected = selectedGroups.has(g.id);
     return {
-      header: isSelected ? `✅ DIPILIH` : `○ Belum dipilih`,
-      title: shortName,
-      description: `${g.memberCount} anggota`,
-      id: `announce_toggle_${g.jid}`,
+      header: isSelected ? "✅" : "⬜",
+      title: g.name.substring(0, 24),
+      description: `${g.participants} anggota${isSelected ? " — Dipilih" : ""}`,
+      id: `announce_toggle_${g.id}`,
     };
   });
 
-  const nonAdminRows = nonAdminGroups.slice(0, 5).map((g) => {
-    const isSelected = selectedGroups.includes(g.jid);
-    const shortName =
-      g.name.length > 18 ? g.name.substring(0, 18) + "…" : g.name;
-    return {
-      header: isSelected ? `✅ DIPILIH` : `⚠️ Bot bukan admin`,
-      title: shortName,
-      description: `${g.memberCount} anggota`,
-      id: `announce_toggle_${g.jid}`,
-    };
-  });
+  // Tambahkan opsi aksi
+  const actionRows = [
+    {
+      header: "✅",
+      title: "Pilih Semua Grup",
+      description: `Pilih semua ${groups.length} grup sekaligus`,
+      id: "announce_select_all",
+    },
+    {
+      header: "⬜",
+      title: "Batalkan Semua Pilihan",
+      description: "Kosongkan semua pilihan",
+      id: "announce_deselect_all",
+    },
+    {
+      header: "➡️",
+      title: "Lanjut → Tulis Pesan",
+      description: `${selectedGroups.size} grup dipilih`,
+      id: "announce_next_compose",
+    },
+    {
+      header: "❌",
+      title: "Batal",
+      description: "Batalkan broadcast",
+      id: "announce_cancel",
+    },
+  ];
 
-  const sections = [];
-
-  sections.push({
-    title: "⚡ Aksi Cepat",
-    rows: [
-      {
-        header: "✅",
-        title: "Pilih Semua Group",
-        description: `Pilih semua ${totalGroups} group`,
-        id: "announce_select_all",
-      },
-      {
-        header: "❌",
-        title: "Batal Semua Pilihan",
-        description: "Kosongkan semua pilihan",
-        id: "announce_deselect_all",
-      },
-      {
-        header: "▶️",
-        title: `Lanjut — ${selectedCount} group dipilih`,
-        description:
-          selectedCount > 0
-            ? `Buat konten untuk ${selectedCount} group`
-            : "Pilih minimal 1 group dulu",
-        id:
-          selectedCount > 0 ? "announce_next_compose" : "announce_need_select",
-      },
-    ],
-  });
-
-  if (adminRows.length > 0) {
-    sections.push({
-      title: `✅ Bot Admin (${adminGroups.length} group)`,
-      rows: adminRows,
-    });
-  }
-
-  if (nonAdminRows.length > 0) {
-    sections.push({
-      title: `⚠️ Bot Bukan Admin (${nonAdminGroups.length} group)`,
-      rows: nonAdminRows,
-    });
-  }
-
-  let selectedListText = "";
-  if (selectedCount > 0) {
-    const names = selectedGroups
-      .slice(0, 10)
-      .map((gjid) => {
-        const g = availableGroups.find((x) => x.jid === gjid);
-        return `✅ ${g?.name || gjid}`;
-      })
-      .join("\n");
-    selectedListText =
-      `\n\n*Group dipilih:*\n${names}` +
-      (selectedCount > 10 ? `\n_...dan ${selectedCount - 10} lainnya_` : "");
-  }
+  const selectedList =
+    selectedGroups.size > 0
+      ? `\n\n✅ *Dipilih:* ${selectedGroups.size}/${groups.length} grup`
+      : `\n\n⬜ *Belum ada grup dipilih*`;
 
   await sock.sendMessage(jid, {
     text:
       `╔══════════════════════════╗\n` +
-      `║  📢 *BROADCAST GROUP*    ║\n` +
+      `║  📢 *BROADCAST GRUP*    ║\n` +
       `╚══════════════════════════╝\n\n` +
-      `📊 *Total group:* ${totalGroups}\n` +
-      `✅ *Dipilih:* ${selectedCount}\n\n` +
-      `Tap nama group untuk pilih/batal pilih.` +
-      selectedListText,
-    footer:
-      selectedCount > 0
-        ? `✅ ${selectedCount} group dipilih — tap Lanjut`
-        : `Pilih minimal 1 group`,
+      `Pilih grup tujuan broadcast.\n` +
+      `Total tersedia: *${groups.length} grup*` +
+      selectedList +
+      `\n\n👇 Pilih dari menu:`,
+    footer: "📢 Broadcast Panel",
     interactiveButtons: [
       {
         name: "single_select",
         buttonParamsJson: JSON.stringify({
-          title: "📋 Pilih Group Tujuan",
-          sections,
+          title: "📋 Pilih Grup & Aksi",
+          sections: [
+            {
+              title: `📋 Daftar Grup (${groups.length})`,
+              rows: rows.slice(0, 10), // max 10 per section
+            },
+            ...(groups.length > 10
+              ? [
+                  {
+                    title: `📋 Grup Lainnya`,
+                    rows: rows.slice(10, 20),
+                  },
+                ]
+              : []),
+            {
+              title: "⚙️ Aksi",
+              rows: actionRows,
+            },
+          ],
         }),
       },
     ],
@@ -338,237 +248,103 @@ async function sendGroupSelectionMenu(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// TOGGLE GROUP
+// STEP 2: COMPOSE PESAN
 // ==========================================
-async function handleAnnounceToggleGroup(sock, jid, senderNumber, groupJid) {
-  const state = getState(senderNumber);
-  if (!state || isStateExpired(state)) {
-    clearState(senderNumber);
-    await sock.sendMessage(jid, {
-      text: `⏰ *Session habis.* Ketik *announce* untuk mulai lagi.`,
-    });
-    return;
-  }
+async function sendComposeMenu(sock, jid, senderNumber) {
+  const state = announceState.get(senderNumber);
+  if (!state) return;
 
-  const { selectedGroups } = state;
-  const idx = selectedGroups.indexOf(groupJid);
+  const { selectedGroups, groups } = state;
 
-  if (idx === -1) {
-    selectedGroups.push(groupJid);
-  } else {
-    selectedGroups.splice(idx, 1);
-  }
-
-  const groupInfo = state.availableGroups.find((g) => g.jid === groupJid);
-  const groupName = groupInfo?.name || groupJid;
-  const action = idx === -1 ? "✅ Ditambahkan" : "❌ Dihapus";
-
-  setState(senderNumber, { ...state, selectedGroups });
-
-  await sock.sendMessage(jid, {
-    text:
-      `${action}: *${groupName}*\n` +
-      `📊 Total dipilih: *${selectedGroups.length} group*`,
-  });
-
-  await sendGroupSelectionMenu(sock, jid, senderNumber);
-}
-
-// ==========================================
-// SELECT ALL / DESELECT ALL
-// ==========================================
-async function handleAnnounceSelectAll(sock, jid, senderNumber) {
-  const state = getState(senderNumber);
-  if (!state || isStateExpired(state)) {
-    clearState(senderNumber);
-    return;
-  }
-  const allJids = state.availableGroups.map((g) => g.jid);
-  setState(senderNumber, { ...state, selectedGroups: allJids });
-  await sock.sendMessage(jid, {
-    text: `✅ *Semua ${allJids.length} group dipilih.*`,
-  });
-  await sendGroupSelectionMenu(sock, jid, senderNumber);
-}
-
-async function handleAnnounceDeselectAll(sock, jid, senderNumber) {
-  const state = getState(senderNumber);
-  if (!state || isStateExpired(state)) {
-    clearState(senderNumber);
-    return;
-  }
-  setState(senderNumber, { ...state, selectedGroups: [] });
-  await sock.sendMessage(jid, {
-    text: `❌ *Semua pilihan dikosongkan.*`,
-  });
-  await sendGroupSelectionMenu(sock, jid, senderNumber);
-}
-
-// ==========================================
-// STEP 2: COMPOSE
-// ==========================================
-async function handleAnnounceCompose(sock, jid, senderNumber) {
-  const state = getState(senderNumber);
-  if (!state || isStateExpired(state)) {
-    clearState(senderNumber);
-    await sock.sendMessage(jid, {
-      text: `⏰ *Session habis.* Ketik *announce* untuk mulai lagi.`,
-    });
-    return;
-  }
-
-  if (state.selectedGroups.length === 0) {
-    await sock.sendMessage(jid, {
-      text: `❌ *Pilih minimal 1 group terlebih dahulu.*`,
-    });
-    await sendGroupSelectionMenu(sock, jid, senderNumber);
-    return;
-  }
-
-  setState(senderNumber, { ...state, step: "compose", content: null });
-
-  const selectedNames = state.selectedGroups
-    .map((gjid) => {
-      const g = state.availableGroups.find((x) => x.jid === gjid);
-      return `├ ${g?.name || gjid}`;
-    })
+  // Tampilkan nama grup yang dipilih
+  const selectedNames = groups
+    .filter((g) => selectedGroups.has(g.id))
+    .map((g) => `• ${g.name}`)
     .join("\n");
+
+  // Update step ke compose
+  state.step = "compose";
+  announceState.set(senderNumber, state);
 
   await sock.sendMessage(jid, {
     text:
       `╔══════════════════════════╗\n` +
-      `║  ✍️  *BUAT KONTEN*       ║\n` +
+      `║  ✍️  *TULIS PESAN*       ║\n` +
       `╚══════════════════════════╝\n\n` +
-      `📤 *Akan dikirim ke:*\n` +
-      `${selectedNames}\n` +
-      `└ Total: *${state.selectedGroups.length} group*\n\n` +
+      `📋 *Grup Tujuan (${selectedGroups.size}):*\n` +
+      `${selectedNames}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `📝 *Kirim konten announce:*\n\n` +
-      `*📝 Teks* → langsung ketik pesan\n\n` +
-      `*🖼️ Foto* → kirim foto\n` +
-      `└ Caption tulis di kolom caption foto\n` +
-      `└ _(bukan pesan teks terpisah)_\n\n` +
-      `*🎥 Video* → kirim video\n` +
-      `└ Caption tulis di kolom caption\n\n` +
-      `*🎵 Audio* → kirim audio/voice note\n\n` +
-      `*📎 File* → kirim dokumen/file\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-      `⏰ _Session aktif 15 menit_\n` +
+      `📝 *Kirim pesan broadcast:*\n` +
+      `• Teks biasa\n` +
+      `• Gambar + caption\n` +
+      `• Video + caption\n\n` +
       `❌ Ketik *batal* untuk membatalkan`,
   });
 }
 
 // ==========================================
-// STEP 3: PREVIEW
+// STEP 3: KONFIRMASI KIRIM
 // ==========================================
-async function handleAnnouncePreview(sock, jid, senderNumber) {
-  const state = getState(senderNumber);
-  if (!state || !state.content) return;
+async function sendConfirmMenu(sock, jid, senderNumber) {
+  const state = announceState.get(senderNumber);
+  if (!state) return;
 
-  setState(senderNumber, { ...state, step: "preview" });
-
-  const { content, selectedGroups, availableGroups } = state;
-
-  const groupList = selectedGroups
-    .map((gjid) => {
-      const g = availableGroups.find((x) => x.jid === gjid);
-      return `├ ${g?.name || gjid} (${g?.memberCount || "?"} anggota)`;
-    })
+  const { selectedGroups, groups, message, type } = state;
+  const selectedNames = groups
+    .filter((g) => selectedGroups.has(g.id))
+    .map((g) => `• ${g.name}`)
     .join("\n");
 
-  const typeEmoji =
-    {
-      text: "📝",
-      image: "🖼️",
-      video: "🎥",
-      audio: "🎵",
-      document: "📎",
-    }[content.type] || "📄";
-
-  let contentDesc = "";
-  switch (content.type) {
-    case "text":
-      contentDesc =
-        `${typeEmoji} *Teks:*\n` +
-        `"${content.text?.substring(0, 150)}` +
-        `${(content.text?.length || 0) > 150 ? "..." : ""}"`;
-      break;
-    case "image":
-      contentDesc =
-        `${typeEmoji} *Foto*\n` +
-        `Ukuran: ${formatSize(content.mediaBuffer?.length)}\n` +
-        (content.caption
-          ? `Caption: "${content.caption?.substring(0, 80)}"`
-          : `_(tanpa caption)_`);
-      break;
-    case "video":
-      contentDesc =
-        `${typeEmoji} *Video*\n` +
-        `Ukuran: ${formatSize(content.mediaBuffer?.length)}\n` +
-        (content.caption
-          ? `Caption: "${content.caption?.substring(0, 80)}"`
-          : `_(tanpa caption)_`);
-      break;
-    case "audio":
-      contentDesc =
-        `${typeEmoji} *${content.ptt ? "Voice Note" : "Audio"}*\n` +
-        `Ukuran: ${formatSize(content.mediaBuffer?.length)}`;
-      break;
-    case "document":
-      contentDesc =
-        `${typeEmoji} *File: ${content.fileName || "unknown"}*\n` +
-        `Ukuran: ${formatSize(content.mediaBuffer?.length)}\n` +
-        (content.caption
-          ? `Caption: "${content.caption?.substring(0, 80)}"`
-          : `_(tanpa caption)_`);
-      break;
-    default:
-      contentDesc = `${typeEmoji} ${content.type}`;
-  }
+  const preview =
+    type === "text"
+      ? `📝 *Preview Pesan:*\n${message?.substring(0, 200)}${message?.length > 200 ? "..." : ""}`
+      : type === "image"
+        ? `🖼️ *Tipe:* Gambar${message ? ` + caption` : ""}`
+        : type === "video"
+          ? `🎬 *Tipe:* Video${message ? ` + caption` : ""}`
+          : `📎 *Tipe:* ${type}`;
 
   await sock.sendMessage(jid, {
     text:
       `╔══════════════════════════╗\n` +
-      `║  👁️  *PREVIEW ANNOUNCE*  ║\n` +
+      `║  ✅ *KONFIRMASI KIRIM*   ║\n` +
       `╚══════════════════════════╝\n\n` +
-      `📤 *Tujuan (${selectedGroups.length} group):*\n` +
-      `${groupList}\n\n` +
+      `📋 *Tujuan (${selectedGroups.size} grup):*\n` +
+      `${selectedNames}\n\n` +
+      `${preview}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `📋 *Konten:*\n` +
-      `${contentDesc}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `⚠️ Pesan akan dikirim ke *${selectedGroups.length} group*.`,
-    footer: "Konfirmasi pengiriman",
+      `Yakin ingin mengirim broadcast?`,
+    footer: "📢 Broadcast Panel",
     interactiveButtons: [
       {
         name: "single_select",
         buttonParamsJson: JSON.stringify({
-          title: "📢 Konfirmasi",
+          title: "⚙️ Konfirmasi",
           sections: [
             {
-              title: "⚙️ Aksi",
+              title: "📢 Aksi Broadcast",
               rows: [
                 {
                   header: "✅",
                   title: "Kirim Sekarang",
-                  description: `Broadcast ke ${selectedGroups.length} group`,
+                  description: `Kirim ke ${selectedGroups.size} grup`,
                   id: "announce_send",
                 },
                 {
-                  header: "✍️",
-                  title: "Ganti Konten",
-                  description: "Ubah pesan/media",
+                  header: "✏️",
+                  title: "Edit Pesan",
+                  description: "Ubah pesan broadcast",
                   id: "announce_recompose",
                 },
                 {
-                  header: "👥",
-                  title: "Ganti Group Tujuan",
-                  description: "Ubah pilihan group",
+                  header: "🔄",
+                  title: "Ubah Pilihan Grup",
+                  description: "Kembali ke pilih grup",
                   id: "announce_reselect",
                 },
                 {
                   header: "❌",
-                  title: "Batalkan",
+                  title: "Batal",
                   description: "Batalkan broadcast",
                   id: "announce_cancel",
                 },
@@ -582,174 +358,315 @@ async function handleAnnouncePreview(sock, jid, senderNumber) {
 }
 
 // ==========================================
-// STEP 4: SEND
+// KIRIM BROADCAST KE SEMUA GRUP TERPILIH
 // ==========================================
-async function handleAnnounceSend(sock, jid, senderNumber) {
-  const state = getState(senderNumber);
-  if (!state || !state.content) {
-    await sock.sendMessage(jid, {
-      text: `❌ *Tidak ada konten.* Ketik *announce* untuk mulai lagi.`,
-    });
-    return;
-  }
+async function executeBroadcast(sock, jid, senderNumber) {
+  const state = announceState.get(senderNumber);
+  if (!state) return;
 
-  if (isStateExpired(state)) {
-    clearState(senderNumber);
-    await sock.sendMessage(jid, {
-      text: `⏰ *Session habis.* Ketik *announce* untuk mulai lagi.`,
-    });
-    return;
-  }
+  const { selectedGroups, groups, message, mediaMsg, type } = state;
 
-  setState(senderNumber, { ...state, step: "sending" });
+  announceState.delete(senderNumber);
 
-  const { content, selectedGroups, availableGroups } = state;
-  const total = selectedGroups.length;
+  const selectedGroupList = groups.filter((g) => selectedGroups.has(g.id));
 
   await sock.sendMessage(jid, {
     text:
-      `📢 *MEMULAI BROADCAST...*\n\n` +
-      `📤 Mengirim ke *${total} group*\n` +
-      `⏳ Mohon tunggu...`,
+      `⏳ *Mengirim broadcast...*\n` +
+      `📋 Target: ${selectedGroupList.length} grup\n\n` +
+      `_Mohon tunggu..._`,
   });
 
-  const results = { success: [], failed: [] };
-  const startTime = Date.now();
+  let successCount = 0;
+  let failCount = 0;
+  const failedGroups = [];
 
-  for (let i = 0; i < selectedGroups.length; i++) {
-    const groupJid = selectedGroups[i];
-    const groupInfo = availableGroups.find((g) => g.jid === groupJid);
-    const groupName = groupInfo?.name || groupJid;
-
+  for (const group of selectedGroupList) {
     try {
-      await sendContentToGroup(sock, groupJid, content);
-      results.success.push(groupName);
-      console.log(`📢 [Announce] ✅ ${i + 1}/${total} → "${groupName}"`);
-    } catch (err) {
-      results.failed.push({ name: groupName, error: err.message });
-      console.error(
-        `📢 [Announce] ❌ ${i + 1}/${total} → "${groupName}": ${err.message}`,
-      );
-    }
+      if (type === "text") {
+        await sock.sendMessage(group.id, { text: message });
+      } else if (type === "image" && mediaMsg) {
+        // Re-send image
+        const imgMsg = mediaMsg.message?.imageMessage;
+        if (imgMsg) {
+          await sock.sendMessage(group.id, {
+            forward: mediaMsg,
+          });
+        } else {
+          await sock.sendMessage(group.id, { text: message || "" });
+        }
+      } else if (type === "video" && mediaMsg) {
+        await sock.sendMessage(group.id, {
+          forward: mediaMsg,
+        });
+      } else {
+        // Fallback: forward pesan
+        if (mediaMsg) {
+          await sock.sendMessage(group.id, { forward: mediaMsg });
+        } else if (message) {
+          await sock.sendMessage(group.id, { text: message });
+        }
+      }
 
-    // Progress setiap 5 group
-    if ((i + 1) % 5 === 0 && i + 1 < total) {
-      await sock.sendMessage(jid, {
-        text:
-          `⏳ *Progress:* ${i + 1}/${total}\n` +
-          `✅ Berhasil: ${results.success.length}\n` +
-          `❌ Gagal: ${results.failed.length}`,
-      });
-    }
-
-    if (i < selectedGroups.length - 1) {
-      await delay(1500);
+      successCount++;
+      // Delay antar grup untuk menghindari spam
+      await new Promise((r) => setTimeout(r, 1000));
+    } catch (e) {
+      failCount++;
+      failedGroups.push(group.name);
+      console.error(`❌ Gagal kirim ke ${group.name}: ${e.message}`);
     }
   }
 
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-  let reportText =
-    `╔══════════════════════════╗\n` +
-    `║  📢 *HASIL BROADCAST*    ║\n` +
-    `╚══════════════════════════╝\n\n` +
-    `📊 *Ringkasan:*\n` +
-    `├ 📤 Total: ${total} group\n` +
-    `├ ✅ Berhasil: ${results.success.length}\n` +
-    `├ ❌ Gagal: ${results.failed.length}\n` +
-    `└ ⏱️ Waktu: ${elapsed} detik\n\n`;
-
-  if (results.success.length > 0) {
-    reportText += `✅ *Berhasil:*\n`;
-    results.success.forEach((name, i) => {
-      const prefix = i === results.success.length - 1 ? "└" : "├";
-      reportText += `${prefix} ${name}\n`;
-    });
-    reportText += "\n";
-  }
-
-  if (results.failed.length > 0) {
-    reportText += `❌ *Gagal:*\n`;
-    results.failed.forEach((f, i) => {
-      const prefix = i === results.failed.length - 1 ? "└" : "├";
-      reportText += `${prefix} ${f.name}: ${f.error?.substring(0, 50)}\n`;
-    });
-  }
-
-  await sock.sendMessage(jid, { text: reportText });
-
-  saveHistory({
-    id: `ANN-${Date.now()}`,
-    sender: senderNumber,
-    contentType: content.type,
-    contentPreview:
-      content.type === "text"
-        ? content.text?.substring(0, 100)
-        : content.caption || `[${content.type}]`,
-    totalGroups: total,
-    successCount: results.success.length,
-    failCount: results.failed.length,
-    successGroups: results.success,
-    failedGroups: results.failed.map((f) => f.name),
-    elapsed,
-    createdAt: new Date().toISOString(),
+  // Simpan ke history
+  addHistory({
+    senderNumber,
+    type,
+    message: message?.substring(0, 200) || `[${type}]`,
+    targetCount: selectedGroupList.length,
+    successCount,
+    failCount,
+    groups: selectedGroupList.map((g) => g.name),
   });
 
-  clearState(senderNumber);
+  // Laporan hasil
+  let report =
+    `╔══════════════════════════╗\n` +
+    `║  📊 *HASIL BROADCAST*    ║\n` +
+    `╚══════════════════════════╝\n\n` +
+    `✅ *Berhasil:* ${successCount} grup\n` +
+    `❌ *Gagal:* ${failCount} grup\n` +
+    `📦 *Total:* ${selectedGroupList.length} grup\n\n`;
+
+  if (failedGroups.length > 0) {
+    report += `⚠️ *Gagal dikirim ke:*\n`;
+    failedGroups.forEach((name) => {
+      report += `• ${name}\n`;
+    });
+  }
+
+  report += `\n⏰ ${new Date().toLocaleString("id-ID")}`;
+
+  await sock.sendMessage(jid, { text: report });
 }
 
 // ==========================================
-// KIRIM KONTEN KE SATU GROUP
+// ROUTER: Handle semua button announce
 // ==========================================
-async function sendContentToGroup(sock, groupJid, content) {
-  switch (content.type) {
-    case "text":
-      await sock.sendMessage(groupJid, { text: content.text });
+async function handleAnnounceRouter(sock, msg, jid, senderNumber, text) {
+  // Pastikan hanya private chat
+  if (!jid.endsWith("@s.whatsapp.net")) return;
+
+  if (!isOwner(senderNumber) && !isAdminBot(senderNumber)) {
+    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
+    return;
+  }
+
+  // Toggle grup
+  if (text.startsWith("announce_toggle_")) {
+    const groupId = text.replace("announce_toggle_", "");
+    const state = announceState.get(senderNumber);
+    if (!state) {
+      await handleAnnounceStart(sock, jid, senderNumber);
+      return;
+    }
+
+    if (state.selectedGroups.has(groupId)) {
+      state.selectedGroups.delete(groupId);
+    } else {
+      state.selectedGroups.add(groupId);
+    }
+    announceState.set(senderNumber, state);
+    await sendGroupSelectionMenu(sock, jid, senderNumber);
+    return;
+  }
+
+  switch (text) {
+    case "announce_start":
+      await handleAnnounceStart(sock, jid, senderNumber);
       break;
 
-    case "image":
-      await sock.sendMessage(groupJid, {
-        image: content.mediaBuffer,
-        caption: content.caption || "",
-        mimetype: content.mimetype || "image/jpeg",
+    case "announce_select_all": {
+      const state = announceState.get(senderNumber);
+      if (!state) {
+        await handleAnnounceStart(sock, jid, senderNumber);
+        return;
+      }
+      state.groups.forEach((g) => state.selectedGroups.add(g.id));
+      announceState.set(senderNumber, state);
+      await sendGroupSelectionMenu(sock, jid, senderNumber);
+      break;
+    }
+
+    case "announce_deselect_all": {
+      const state = announceState.get(senderNumber);
+      if (!state) return;
+      state.selectedGroups.clear();
+      announceState.set(senderNumber, state);
+      await sendGroupSelectionMenu(sock, jid, senderNumber);
+      break;
+    }
+
+    case "announce_need_select":
+      await sock.sendMessage(jid, {
+        text: `⚠️ *Pilih minimal 1 grup terlebih dahulu!*`,
       });
       break;
 
-    case "video":
-      await sock.sendMessage(groupJid, {
-        video: content.mediaBuffer,
-        caption: content.caption || "",
-        mimetype: content.mimetype || "video/mp4",
+    case "announce_next_compose": {
+      const state = announceState.get(senderNumber);
+      if (!state) return;
+
+      if (state.selectedGroups.size === 0) {
+        await sock.sendMessage(jid, {
+          text: `⚠️ *Pilih minimal 1 grup terlebih dahulu!*`,
+        });
+        await sendGroupSelectionMenu(sock, jid, senderNumber);
+        return;
+      }
+
+      await sendComposeMenu(sock, jid, senderNumber);
+      break;
+    }
+
+    case "announce_recompose": {
+      const state = announceState.get(senderNumber);
+      if (!state) return;
+      state.step = "compose";
+      state.message = null;
+      state.mediaMsg = null;
+      state.type = null;
+      announceState.set(senderNumber, state);
+      await sendComposeMenu(sock, jid, senderNumber);
+      break;
+    }
+
+    case "announce_reselect": {
+      const state = announceState.get(senderNumber);
+      if (!state) return;
+      state.step = "select_groups";
+      announceState.set(senderNumber, state);
+      await sendGroupSelectionMenu(sock, jid, senderNumber);
+      break;
+    }
+
+    case "announce_send":
+      await executeBroadcast(sock, jid, senderNumber);
+      break;
+
+    case "announce_cancel":
+      announceState.delete(senderNumber);
+      await sock.sendMessage(jid, {
+        text: `❌ *Broadcast dibatalkan.*`,
       });
       break;
 
-    case "audio":
-      await sock.sendMessage(groupJid, {
-        audio: content.mediaBuffer,
-        mimetype: content.mimetype || "audio/ogg; codecs=opus",
-        ptt: content.ptt || false,
-      });
-      break;
-
-    case "document":
-      await sock.sendMessage(groupJid, {
-        document: content.mediaBuffer,
-        mimetype: content.mimetype || "application/octet-stream",
-        fileName: content.fileName || "file",
-        caption: content.caption || "",
-      });
+    case "announce_history":
+      await handleAnnounceHistory(sock, jid, senderNumber);
       break;
 
     default:
-      throw new Error(`Tipe konten tidak dikenal: ${content.type}`);
+      break;
   }
 }
 
 // ==========================================
-// HISTORY
+// HANDLE INCOMING (Text & Media) saat state aktif
+// ==========================================
+async function handleAnnounceIncoming(sock, msg, jid, senderNumber) {
+  // Pastikan hanya private chat
+  if (!jid.endsWith("@s.whatsapp.net")) return false;
+
+  const state = announceState.get(senderNumber);
+  if (!state) return false;
+
+  const m = msg.message;
+  if (!m) return false;
+
+  // Ambil teks dari pesan
+  const rawText = (
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    ""
+  ).trim();
+
+  const lowerText = rawText.toLowerCase();
+
+  // ── Handle "batal" ──
+  if (lowerText === "batal" || lowerText === "cancel") {
+    announceState.delete(senderNumber);
+    await sock.sendMessage(jid, { text: `❌ *Broadcast dibatalkan.*` });
+    return true;
+  }
+
+  // ── Jika step = select_groups: abaikan teks biasa ──
+  if (state.step === "select_groups") {
+    // Hanya terima command announce yang valid
+    return false;
+  }
+
+  // ── Jika step = compose: terima pesan ──
+  if (state.step === "compose") {
+    // Deteksi tipe pesan
+    if (m.imageMessage) {
+      state.type = "image";
+      state.message = rawText || null; // caption
+      state.mediaMsg = msg;
+    } else if (m.videoMessage) {
+      state.type = "video";
+      state.message = rawText || null;
+      state.mediaMsg = msg;
+    } else if (m.documentMessage) {
+      state.type = "document";
+      state.message = rawText || null;
+      state.mediaMsg = msg;
+    } else if (m.audioMessage || m.stickerMessage) {
+      state.type = m.audioMessage ? "audio" : "sticker";
+      state.mediaMsg = msg;
+      state.message = null;
+    } else if (rawText) {
+      state.type = "text";
+      state.message = rawText;
+      state.mediaMsg = null;
+    } else {
+      // Tipe tidak dikenali
+      await sock.sendMessage(jid, {
+        text: `⚠️ *Tipe pesan tidak didukung.*\nKirim teks, gambar, atau video.`,
+      });
+      return true;
+    }
+
+    state.step = "confirm";
+    announceState.set(senderNumber, state);
+
+    // Tampilkan konfirmasi
+    await sendConfirmMenu(sock, jid, senderNumber);
+    return true;
+  }
+
+  // ── Jika step = confirm: abaikan teks biasa ──
+  if (state.step === "confirm") {
+    return false;
+  }
+
+  return false;
+}
+
+// ==========================================
+// RIWAYAT BROADCAST
 // ==========================================
 async function handleAnnounceHistory(sock, jid, senderNumber) {
-  if (!isAllowedSender(senderNumber)) {
+  // Pastikan hanya private chat
+  if (!jid.endsWith("@s.whatsapp.net")) {
+    await sock.sendMessage(jid, {
+      text: `⚠️ Fitur ini hanya bisa digunakan di *private chat*.`,
+    });
+    return;
+  }
+
+  if (!isOwner(senderNumber) && !isAdminBot(senderNumber)) {
     await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
     return;
   }
@@ -758,366 +675,46 @@ async function handleAnnounceHistory(sock, jid, senderNumber) {
 
   if (history.length === 0) {
     await sock.sendMessage(jid, {
-      text: `📋 *RIWAYAT BROADCAST*\n\n_Belum ada riwayat._`,
+      text:
+        `╔══════════════════════════╗\n` +
+        `║  📋 *RIWAYAT BROADCAST* ║\n` +
+        `╚══════════════════════════╝\n\n` +
+        `_Belum ada riwayat broadcast._`,
     });
     return;
   }
 
   let text =
     `╔══════════════════════════╗\n` +
-    `║  📋 *RIWAYAT BROADCAST*  ║\n` +
+    `║  📋 *RIWAYAT BROADCAST* ║\n` +
     `╚══════════════════════════╝\n\n`;
 
   history.slice(0, 10).forEach((h, i) => {
     const date = new Date(h.createdAt).toLocaleString("id-ID");
-    const typeEmoji =
-      {
-        text: "📝",
-        image: "🖼️",
-        video: "🎥",
-        audio: "🎵",
-        document: "📎",
-      }[h.contentType] || "📄";
-
     text +=
-      `*${i + 1}. ${h.id}*\n` +
-      `   ${typeEmoji} ${(h.contentType || "?").toUpperCase()}\n` +
-      `   📤 ${h.totalGroups} group · ✅ ${h.successCount} · ❌ ${h.failCount}\n` +
-      `   💬 "${h.contentPreview?.substring(0, 50)}"\n` +
-      `   ⏱️ ${h.elapsed}s · 📅 ${date}\n\n`;
+      `*${i + 1}. Broadcast #${h.id}*\n` +
+      `👤 Oleh: +${h.senderNumber}\n` +
+      `📝 Tipe: ${h.type}\n` +
+      `📦 Target: ${h.targetCount} grup\n` +
+      `✅ Berhasil: ${h.successCount} | ❌ Gagal: ${h.failCount}\n` +
+      `💬 Pesan: ${(h.message || "-").substring(0, 50)}${h.message?.length > 50 ? "..." : ""}\n` +
+      `📅 ${date}\n\n`;
   });
 
-  text += `_${Math.min(10, history.length)} dari ${history.length} broadcast_`;
+  if (history.length > 10) {
+    text += `_... dan ${history.length - 10} riwayat lainnya_`;
+  }
+
   await sock.sendMessage(jid, { text });
 }
 
 // ==========================================
-// HANDLE INCOMING MESSAGE
-// Return true jika pesan sudah dihandle
-// ==========================================
-async function handleAnnounceIncoming(sock, msg, jid, senderNumber) {
-  const state = getState(senderNumber);
-  if (!state) return false;
-
-  if (isStateExpired(state)) {
-    clearState(senderNumber);
-    await sock.sendMessage(jid, {
-      text: `⏰ *Session broadcast habis.*\n\nKetik *announce* untuk mulai lagi.`,
-    });
-    return true;
-  }
-
-  if (state.step !== "compose") return false;
-
-  const m = msg.message;
-  if (!m) return false;
-
-  // ── Unwrap pesan ──
-  const actualMsg =
-    m.ephemeralMessage?.message ||
-    m.viewOnceMessage?.message ||
-    m.viewOnceMessageV2?.message ||
-    m.documentWithCaptionMessage?.message ||
-    m;
-
-  // ── Cek batal ──
-  const isPlainText = !!(
-    actualMsg.conversation || actualMsg.extendedTextMessage?.text
-  );
-  const plainText = (
-    actualMsg.conversation ||
-    actualMsg.extendedTextMessage?.text ||
-    ""
-  )
-    .toLowerCase()
-    .trim();
-
-  if (isPlainText && (plainText === "batal" || plainText === "cancel")) {
-    clearState(senderNumber);
-    await sock.sendMessage(jid, { text: `❌ *Broadcast dibatalkan.*` });
-    return true;
-  }
-
-  // ==========================================
-  // CEK MEDIA LEBIH DULU
-  // ==========================================
-
-  // ── IMAGE ──
-  const imageMsg = actualMsg.imageMessage || m.imageMessage;
-  if (imageMsg) {
-    await sock.sendMessage(jid, {
-      text: `⏳ *Mengunduh foto...*\n_Mohon tunggu_`,
-    });
-    try {
-      const buffer = await downloadMedia(sock, msg, 30000);
-      if (!buffer || buffer.length === 0)
-        throw new Error("Download gagal, coba kirim ulang");
-
-      console.log(`📢 [Announce] Image: ${formatSize(buffer.length)}`);
-
-      setState(senderNumber, {
-        ...state,
-        content: {
-          type: "image",
-          mediaBuffer: buffer,
-          caption: imageMsg.caption || "",
-          mimetype: imageMsg.mimetype || "image/jpeg",
-        },
-      });
-
-      await handleAnnouncePreview(sock, jid, senderNumber);
-    } catch (err) {
-      console.error(`📢 [Announce] Image error: ${err.message}`);
-      await sock.sendMessage(jid, {
-        text:
-          `❌ *Gagal proses foto:*\n${err.message}\n\n` + `Coba kirim ulang.`,
-      });
-    }
-    return true;
-  }
-
-  // ── VIDEO ──
-  const videoMsg = actualMsg.videoMessage || m.videoMessage;
-  if (videoMsg) {
-    const videoSize = videoMsg.fileLength ? parseInt(videoMsg.fileLength) : 0;
-
-    if (videoSize > 50 * 1024 * 1024) {
-      await sock.sendMessage(jid, {
-        text:
-          `❌ *Video terlalu besar*\n\n` +
-          `Ukuran: ${formatSize(videoSize)}\n` +
-          `Maks untuk broadcast: *50 MB*\n\n` +
-          `*Solusi:*\n` +
-          `• Kompres video terlebih dahulu\n` +
-          `• Atau kirim sebagai *File/Dokumen*\n` +
-          `  (📎 → Document → pilih video)`,
-      });
-      return true;
-    }
-
-    await sock.sendMessage(jid, {
-      text:
-        `⏳ *Mengunduh video...*\n` +
-        `Ukuran: ${formatSize(videoSize)}\n` +
-        `_Proses ini mungkin membutuhkan waktu..._`,
-    });
-
-    try {
-      const buffer = await downloadMedia(sock, msg, 120000);
-      if (!buffer || buffer.length === 0)
-        throw new Error("Download gagal, coba kirim ulang");
-
-      console.log(`📢 [Announce] Video: ${formatSize(buffer.length)}`);
-
-      setState(senderNumber, {
-        ...state,
-        content: {
-          type: "video",
-          mediaBuffer: buffer,
-          caption: videoMsg.caption || "",
-          mimetype: videoMsg.mimetype || "video/mp4",
-        },
-      });
-
-      await handleAnnouncePreview(sock, jid, senderNumber);
-    } catch (err) {
-      console.error(`📢 [Announce] Video error: ${err.message}`);
-      await sock.sendMessage(jid, {
-        text:
-          `❌ *Gagal proses video:*\n${err.message}\n\n` +
-          `*Alternatif:* Kirim sebagai *File/Dokumen*\n` +
-          `(📎 → Document → pilih video)`,
-      });
-    }
-    return true;
-  }
-
-  // ── AUDIO / PTT ──
-  const audioMsg = actualMsg.audioMessage || m.audioMessage;
-  if (audioMsg) {
-    await sock.sendMessage(jid, {
-      text: `⏳ *Mengunduh audio...*\n_Mohon tunggu_`,
-    });
-    try {
-      const buffer = await downloadMedia(sock, msg, 30000);
-      if (!buffer || buffer.length === 0)
-        throw new Error("Download gagal, coba kirim ulang");
-
-      const isPtt = audioMsg.ptt || false;
-      console.log(
-        `📢 [Announce] ${isPtt ? "PTT" : "Audio"}: ${formatSize(buffer.length)}`,
-      );
-
-      setState(senderNumber, {
-        ...state,
-        content: {
-          type: "audio",
-          mediaBuffer: buffer,
-          mimetype: audioMsg.mimetype || "audio/ogg; codecs=opus",
-          ptt: isPtt,
-        },
-      });
-
-      await handleAnnouncePreview(sock, jid, senderNumber);
-    } catch (err) {
-      console.error(`📢 [Announce] Audio error: ${err.message}`);
-      await sock.sendMessage(jid, {
-        text:
-          `❌ *Gagal proses audio:*\n${err.message}\n\n` + `Coba kirim ulang.`,
-      });
-    }
-    return true;
-  }
-
-  // ── DOCUMENT ──
-  const docMsg =
-    actualMsg.documentMessage ||
-    m.documentMessage ||
-    actualMsg.documentWithCaptionMessage?.message?.documentMessage;
-  if (docMsg) {
-    const fileSize = docMsg.fileLength ? parseInt(docMsg.fileLength) : 0;
-
-    await sock.sendMessage(jid, {
-      text:
-        `⏳ *Mengunduh file...*\n` +
-        `📎 ${docMsg.fileName || "file"}\n` +
-        `Ukuran: ${formatSize(fileSize)}\n` +
-        `_Mohon tunggu..._`,
-    });
-
-    try {
-      const buffer = await downloadMedia(sock, msg, 60000);
-      if (!buffer || buffer.length === 0)
-        throw new Error("Download gagal, coba kirim ulang");
-
-      console.log(
-        `📢 [Announce] File: "${docMsg.fileName}" ${formatSize(buffer.length)}`,
-      );
-
-      setState(senderNumber, {
-        ...state,
-        content: {
-          type: "document",
-          mediaBuffer: buffer,
-          mimetype: docMsg.mimetype || "application/octet-stream",
-          fileName: docMsg.fileName || "file",
-          caption: docMsg.caption || "",
-        },
-      });
-
-      await handleAnnouncePreview(sock, jid, senderNumber);
-    } catch (err) {
-      console.error(`📢 [Announce] Doc error: ${err.message}`);
-      await sock.sendMessage(jid, {
-        text:
-          `❌ *Gagal proses file:*\n${err.message}\n\n` + `Coba kirim ulang.`,
-      });
-    }
-    return true;
-  }
-
-  // ── TEXT ──
-  if (isPlainText) {
-    const originalText =
-      actualMsg.conversation || actualMsg.extendedTextMessage?.text || "";
-
-    if (!originalText.trim()) return false;
-
-    setState(senderNumber, {
-      ...state,
-      content: {
-        type: "text",
-        text: originalText,
-      },
-    });
-
-    console.log(`📢 [Announce] Text: "${originalText.substring(0, 80)}"`);
-
-    await handleAnnouncePreview(sock, jid, senderNumber);
-    return true;
-  }
-
-  // ── Tipe tidak dikenal ──
-  await sock.sendMessage(jid, {
-    text:
-      `⚠️ *Tipe pesan tidak didukung.*\n\n` +
-      `Yang didukung:\n` +
-      `• 📝 Teks\n` +
-      `• 🖼️ Foto (caption di kolom caption)\n` +
-      `• 🎥 Video max 50 MB\n` +
-      `• 🎵 Audio / Voice Note\n` +
-      `• 📎 File / Dokumen\n\n` +
-      `❌ Ketik *batal* untuk membatalkan.`,
-  });
-  return true;
-}
-
-// ==========================================
-// ROUTER
-// ==========================================
-async function handleAnnounceRouter(sock, msg, jid, senderNumber, rawId) {
-  if (!isAllowedSender(senderNumber)) {
-    await sock.sendMessage(jid, { text: "⛔ *AKSES DITOLAK*" });
-    return;
-  }
-
-  if (rawId.startsWith("announce_toggle_")) {
-    const groupJid = rawId.replace("announce_toggle_", "");
-    await handleAnnounceToggleGroup(sock, jid, senderNumber, groupJid);
-    return;
-  }
-
-  switch (rawId) {
-    case "announce_start":
-      await handleAnnounceStart(sock, jid, senderNumber);
-      break;
-    case "announce_select_all":
-      await handleAnnounceSelectAll(sock, jid, senderNumber);
-      break;
-    case "announce_deselect_all":
-      await handleAnnounceDeselectAll(sock, jid, senderNumber);
-      break;
-    case "announce_need_select":
-      await sock.sendMessage(jid, {
-        text: `⚠️ *Pilih minimal 1 group terlebih dahulu.*`,
-      });
-      await sendGroupSelectionMenu(sock, jid, senderNumber);
-      break;
-    case "announce_next_compose":
-    case "announce_recompose":
-      await handleAnnounceCompose(sock, jid, senderNumber);
-      break;
-    case "announce_reselect": {
-      const state = getState(senderNumber);
-      if (state) {
-        setState(senderNumber, { ...state, step: "select_groups" });
-        await sendGroupSelectionMenu(sock, jid, senderNumber);
-      }
-      break;
-    }
-    case "announce_send":
-      await handleAnnounceSend(sock, jid, senderNumber);
-      break;
-    case "announce_cancel":
-      clearState(senderNumber);
-      await sock.sendMessage(jid, { text: `❌ *Broadcast dibatalkan.*` });
-      break;
-    case "announce_history":
-      await handleAnnounceHistory(sock, jid, senderNumber);
-      break;
-    default:
-      break;
-  }
-}
-
-// ==========================================
-// EXPORT
+// EXPORTS
 // ==========================================
 module.exports = {
-  getAnnounceMenuSection,
+  announceState,
   handleAnnounceStart,
   handleAnnounceRouter,
-  handleAnnounceHistory,
   handleAnnounceIncoming,
-  announceState,
+  handleAnnounceHistory,
 };
