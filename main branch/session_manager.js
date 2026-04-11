@@ -1,5 +1,5 @@
 // ==========================================
-// SESSION_MANAGER.JS - MongoDB Atlas
+// SESSION_MANAGER.JS - Supabase PostgreSQL
 // ==========================================
 
 require("dotenv").config();
@@ -12,18 +12,21 @@ const path = require("path");
 // ==========================================
 const AUTH_DIR = (() => {
   const candidate = path.resolve(__dirname, "..", "session");
-  if (candidate === "/session" || candidate === "\\session") {
+  // Cek apakah bisa ditulis
+  try {
+    const parentDir = path.dirname(candidate);
+    fs.accessSync(parentDir, fs.constants.W_OK);
+    return candidate;
+  } catch {
+    // Fallback ke dalam __dirname
     return path.resolve(__dirname, "session_data");
   }
-  return candidate;
 })();
 
-const MONGO_URI = process.env.MONGODB_URI;
+const DATABASE_URL = process.env.DATABASE_URL; // Supabase connection string
 const SESSION_ID = process.env.SESSION_ID || "whatsapp_bot_session";
 
-let mongoClient = null;
-let db = null;
-let collection = null;
+let pgClient = null;
 let isConnected = false;
 let backupTimeout = null;
 
@@ -41,7 +44,7 @@ function ensureSessionDir() {
       log(`📁 Folder session dibuat: ${AUTH_DIR}`);
     }
   } catch (e) {
-    log(`❌ Tidak bisa buat folder ${AUTH_DIR}: ${e.message}`);
+    log(`❌ Tidak bisa buat folder: ${e.message}`);
   }
 }
 
@@ -67,172 +70,67 @@ function isSessionValid() {
 }
 
 // ==========================================
-// CONNECT MONGODB — Dengan SSL Fix
+// CONNECT POSTGRESQL (Supabase)
 // ==========================================
-async function connectMongo() {
-  // Jika sudah connected, return true
-  if (isConnected && db && mongoClient) {
+async function connectDB() {
+  if (isConnected && pgClient) {
     try {
-      // Ping untuk pastikan koneksi masih hidup
-      await db.command({ ping: 1 });
+      await pgClient.query("SELECT 1");
       return true;
     } catch {
-      // Koneksi mati, reset dan reconnect
       isConnected = false;
-      mongoClient = null;
-      db = null;
-      collection = null;
+      pgClient = null;
     }
   }
 
-  if (!MONGO_URI) {
-    log("⚠️ MONGODB_URI tidak diset di environment.");
+  if (!DATABASE_URL) {
+    log("⚠️ DATABASE_URL tidak diset di environment.");
     return false;
   }
 
   try {
-    const { MongoClient } = require("mongodb");
+    const { Client } = require("pg");
 
-    mongoClient = new MongoClient(MONGO_URI, {
-      // ── SSL Fix untuk Node.js lama ──
-      tls: true,
-      tlsAllowInvalidCertificates: false,
-      tlsAllowInvalidHostnames: false,
-
-      // ── Timeout settings ──
-      connectTimeoutMS: 30000,
-      socketTimeoutMS: 30000,
-      serverSelectionTimeoutMS: 30000,
-
-      // ── Connection pool ──
-      maxPoolSize: 3,
-      minPoolSize: 1,
-
-      // ── Retry ──
-      retryWrites: true,
-      retryReads: true,
-
-      // ── Compatibility ──
-      authSource: "admin",
+    pgClient = new Client({
+      connectionString: DATABASE_URL,
+      ssl: {
+        rejectUnauthorized: false, // Supabase perlu ini
+      },
+      connectionTimeoutMillis: 15000,
+      statement_timeout: 30000,
     });
 
-    await mongoClient.connect();
+    await pgClient.connect();
 
-    db = mongoClient.db("whatsapp_session");
-    collection = db.collection("sessions");
-
-    // Buat index jika belum ada
-    await collection.createIndex({ sessionId: 1 }, { unique: true });
+    // Buat tabel jika belum ada
+    await pgClient.query(`
+      CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+        session_id VARCHAR(255) PRIMARY KEY,
+        files JSONB NOT NULL DEFAULT '{}',
+        file_count INTEGER DEFAULT 0,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        node_version VARCHAR(50)
+      )
+    `);
 
     isConnected = true;
-    log("✅ MongoDB Atlas terhubung!");
+    log("✅ Supabase PostgreSQL terhubung!");
     return true;
   } catch (e) {
-    log(`❌ MongoDB error: ${e.message}`);
-
-    // Jika SSL error, coba dengan opsi berbeda
-    if (
-      e.message.includes("SSL") ||
-      e.message.includes("ssl") ||
-      e.message.includes("tls") ||
-      e.message.includes("TLS")
-    ) {
-      log(
-        "⚠️ SSL error terdeteksi, mencoba dengan tlsAllowInvalidCertificates...",
-      );
-      return await connectMongoFallback();
-    }
-
+    log(`❌ Database error: ${e.message}`);
     isConnected = false;
-    mongoClient = null;
-    db = null;
-    collection = null;
+    pgClient = null;
     return false;
   }
 }
 
 // ==========================================
-// CONNECT MONGODB FALLBACK — SSL Relaxed
-// ==========================================
-async function connectMongoFallback() {
-  try {
-    const { MongoClient } = require("mongodb");
-
-    mongoClient = new MongoClient(MONGO_URI, {
-      tls: true,
-      tlsAllowInvalidCertificates: true, // Fallback: allow invalid cert
-      tlsAllowInvalidHostnames: true,
-      connectTimeoutMS: 30000,
-      socketTimeoutMS: 30000,
-      serverSelectionTimeoutMS: 30000,
-      maxPoolSize: 3,
-      retryWrites: true,
-      retryReads: true,
-    });
-
-    await mongoClient.connect();
-
-    db = mongoClient.db("whatsapp_session");
-    collection = db.collection("sessions");
-    await collection.createIndex({ sessionId: 1 }, { unique: true });
-
-    isConnected = true;
-    log("✅ MongoDB terhubung (fallback SSL mode)!");
-    return true;
-  } catch (e) {
-    log(`❌ MongoDB fallback error: ${e.message}`);
-
-    // Coba tanpa TLS sama sekali (untuk localhost/testing)
-    return await connectMongoNoTLS();
-  }
-}
-
-// ==========================================
-// CONNECT MONGODB NO TLS — Last Resort
-// ==========================================
-async function connectMongoNoTLS() {
-  try {
-    const { MongoClient } = require("mongodb");
-
-    // Parse URI dan tambahkan parameter
-    let uri = MONGO_URI;
-    if (uri.includes("?")) {
-      uri += "&tls=true&tlsAllowInvalidCertificates=true";
-    } else {
-      uri += "?tls=true&tlsAllowInvalidCertificates=true";
-    }
-
-    mongoClient = new MongoClient(uri, {
-      connectTimeoutMS: 30000,
-      serverSelectionTimeoutMS: 30000,
-    });
-
-    await mongoClient.connect();
-
-    db = mongoClient.db("whatsapp_session");
-    collection = db.collection("sessions");
-    await collection.createIndex({ sessionId: 1 }, { unique: true });
-
-    isConnected = true;
-    log("✅ MongoDB terhubung (no-TLS mode)!");
-    return true;
-  } catch (e) {
-    log(`❌ MongoDB no-TLS error: ${e.message}`);
-    isConnected = false;
-    mongoClient = null;
-    db = null;
-    collection = null;
-    return false;
-  }
-}
-
-// ==========================================
-// BACKUP SESSION KE MONGODB
+// BACKUP SESSION KE SUPABASE
 // ==========================================
 async function backupSession() {
-  const ok = await connectMongo();
+  const ok = await connectDB();
   if (!ok) {
-    log("⚠️ Skip backup — MongoDB tidak terhubung.");
+    log("⚠️ Skip backup — Database tidak terhubung.");
     return;
   }
 
@@ -258,38 +156,36 @@ async function backupSession() {
       }
     }
 
-    await collection.updateOne(
-      { sessionId: SESSION_ID },
-      {
-        $set: {
-          sessionId: SESSION_ID,
-          files: sessionData,
-          fileCount: files.length,
-          updatedAt: new Date(),
-          nodeVersion: process.version,
-        },
-      },
-      { upsert: true },
+    await pgClient.query(
+      `INSERT INTO whatsapp_sessions (session_id, files, file_count, updated_at, node_version)
+       VALUES ($1, $2, $3, NOW(), $4)
+       ON CONFLICT (session_id)
+       DO UPDATE SET
+         files = $2,
+         file_count = $3,
+         updated_at = NOW(),
+         node_version = $4`,
+      [SESSION_ID, JSON.stringify(sessionData), files.length, process.version],
     );
 
-    log(`✅ Backup berhasil! (${files.length} files → MongoDB)`);
+    log(`✅ Backup berhasil! (${files.length} files → Supabase)`);
   } catch (e) {
     log(`❌ Backup error: ${e.message}`);
-    isConnected = false; // Reset koneksi agar reconnect berikutnya
+    isConnected = false;
   }
 }
 
 // ==========================================
-// RESTORE SESSION DARI MONGODB
+// RESTORE SESSION DARI SUPABASE
 // ==========================================
 async function restoreSession() {
-  log("🔄 Mencoba restore session dari MongoDB...");
+  log("🔄 Mencoba restore session dari Supabase...");
   log(`   SESSION_ID: ${SESSION_ID}`);
   log(`   AUTH_DIR  : ${AUTH_DIR}`);
 
-  const ok = await connectMongo();
+  const ok = await connectDB();
   if (!ok) {
-    log("❌ MongoDB tidak terhubung, skip restore.");
+    log("❌ Database tidak terhubung, skip restore.");
     return false;
   }
 
@@ -299,22 +195,26 @@ async function restoreSession() {
   }
 
   try {
-    const doc = await collection.findOne({ sessionId: SESSION_ID });
+    const result = await pgClient.query(
+      "SELECT * FROM whatsapp_sessions WHERE session_id = $1",
+      [SESSION_ID],
+    );
 
-    if (!doc || !doc.files) {
-      log("ℹ️ Tidak ada session di MongoDB.");
+    if (result.rows.length === 0 || !result.rows[0].files) {
+      log("ℹ️ Tidak ada session di Supabase.");
       log("   Bot akan tampilkan QR Code untuk scan pertama.");
       return false;
     }
 
-    ensureSessionDir();
-
+    const doc = result.rows[0];
     const files = doc.files;
-    let restored = 0;
     const total = Object.keys(files).length;
 
-    log(`📦 Ditemukan ${total} files di MongoDB, menginstall...`);
+    ensureSessionDir();
 
+    log(`📦 Ditemukan ${total} files di Supabase, menginstall...`);
+
+    let restored = 0;
     for (const [filename, content] of Object.entries(files)) {
       const filePath = path.join(AUTH_DIR, filename);
       try {
@@ -330,8 +230,10 @@ async function restoreSession() {
     }
 
     log(`✅ Restore selesai! (${restored}/${total} files)`);
-    if (doc.updatedAt) {
-      log(`   Last backup: ${new Date(doc.updatedAt).toLocaleString("id-ID")}`);
+    if (doc.updated_at) {
+      log(
+        `   Last backup: ${new Date(doc.updated_at).toLocaleString("id-ID")}`,
+      );
     }
 
     return isSessionValid();
@@ -356,12 +258,15 @@ function scheduleBackup(delayMs = 5000) {
 // DELETE SESSION
 // ==========================================
 async function deleteSession() {
-  const ok = await connectMongo();
+  const ok = await connectDB();
   if (!ok) return;
 
   try {
-    await collection.deleteOne({ sessionId: SESSION_ID });
-    log("🗑️ Session dihapus dari MongoDB.");
+    await pgClient.query(
+      "DELETE FROM whatsapp_sessions WHERE session_id = $1",
+      [SESSION_ID],
+    );
+    log("🗑️ Session dihapus dari Supabase.");
   } catch (e) {
     log(`❌ Delete error: ${e.message}`);
   }
@@ -372,20 +277,19 @@ async function deleteSession() {
 // ==========================================
 async function initSessionManager() {
   console.log("\n╔══════════════════════════════════════╗");
-  console.log("║   🔐 SESSION MANAGER (MongoDB)       ║");
+  console.log("║   🔐 SESSION MANAGER (Supabase)      ║");
   console.log("╚══════════════════════════════════════╝");
 
-  log(`__dirname : ${__dirname}`);
-  log(`AUTH_DIR  : ${AUTH_DIR}`);
-  log(`SESSION_ID: ${SESSION_ID}`);
-  log(`Node.js   : ${process.version}`);
-  log(`MongoDB   : ${MONGO_URI ? "✅ URI diset" : "❌ tidak diset"}`);
+  log(`__dirname  : ${__dirname}`);
+  log(`AUTH_DIR   : ${AUTH_DIR}`);
+  log(`SESSION_ID : ${SESSION_ID}`);
+  log(`Node.js    : ${process.version}`);
+  log(`Database   : ${DATABASE_URL ? "✅ URL diset" : "❌ tidak diset"}`);
 
   ensureSessionDir();
 
   if (isSessionValid()) {
     log("✅ Session lokal valid.");
-    // Backup ke MongoDB untuk sinkronisasi
     scheduleBackup(15000);
     return true;
   }
