@@ -47,8 +47,7 @@ const {
 const logger = pino({ level: "silent" });
 const PORT = process.env.PORT || 8080;
 
-// AUTH_DIR dari session_manager = ../session/
-// STORE di dalam main branch/
+// Store di dalam main branch/
 const STORE_PATH = path.resolve(__dirname, "store.json");
 const STORE_BACKUP_PATH = path.resolve(__dirname, "store_backup.json");
 
@@ -56,9 +55,22 @@ const STORE_BACKUP_PATH = path.resolve(__dirname, "store_backup.json");
 // ENSURE DIRECTORIES
 // ==========================================
 function ensureDirectories() {
-  if (!fs.existsSync(AUTH_DIR)) {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
-    console.log(`📁 Dibuat: ${AUTH_DIR}`);
+  // AUTH_DIR sudah dihandle session_manager
+  // Hanya buat direktori yang ada di dalam __dirname
+  const dirs = [
+    path.resolve(__dirname, "database"),
+    path.resolve(__dirname, "images", "menu"),
+  ];
+
+  for (const dir of dirs) {
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        console.log(`📁 Dibuat: ${dir}`);
+      }
+    } catch (e) {
+      console.warn(`⚠️ Tidak bisa buat ${dir}: ${e.message}`);
+    }
   }
 }
 
@@ -139,6 +151,7 @@ const server = http.createServer(async (req, res) => {
   const url = req.url;
   const method = req.method;
 
+  // ── Webhook Pakasir ──
   if (url === "/webhook/pakasir" && method === "POST") {
     let body = "";
     req.on("data", (chunk) => (body += chunk.toString()));
@@ -173,6 +186,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Ping ──
   if (url === "/ping" || url === "/") {
     botStatus.lastPing = new Date();
     botStatus.pingCount++;
@@ -186,17 +200,20 @@ const server = http.createServer(async (req, res) => {
         webhooks: botStatus.webhookCount,
         lidMappings: getLidMapSize(),
         reconnectAttempts,
+        sessionDir: AUTH_DIR,
       }),
     );
     return;
   }
 
+  // ── Health ──
   if (url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ status: "healthy" }));
     return;
   }
 
+  // ── Status Dashboard ──
   if (url === "/status") {
     const all = pakasir.loadOrders();
     const completed = all.filter((o) => o.status === "completed");
@@ -226,6 +243,7 @@ const server = http.createServer(async (req, res) => {
       <div><span class="l">Webhooks</span><span class="v">${botStatus.webhookCount}</span></div>
       <div><span class="l">LID Mappings</span><span class="v">${getLidMapSize()}</span></div>
       <div><span class="l">Reconnects</span><span class="v">${reconnectAttempts}</span></div>
+      <div><span class="l">Session Dir</span><span class="v" style="font-size:11px">${AUTH_DIR}</span></div>
       </div></div>
       <div class="c"><h2>💳 Payment</h2><div class="i">
       <div><span class="l">Total Orders</span><span class="v">${all.length}</span></div>
@@ -490,7 +508,7 @@ async function startBot() {
   console.log(
     sessionExists
       ? `🔑 Session ditemukan di ${AUTH_DIR} — resume...`
-      : `📱 Session tidak ada — tampilkan QR Code...`,
+      : `📱 Session tidak ada di ${AUTH_DIR} — tampilkan QR...`,
   );
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -527,6 +545,7 @@ async function startBot() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
 
+    // ── Tampilkan QR ──
     if (qr) {
       console.log("\n╔══════════════════════════════════════╗");
       console.log("║   📱 SCAN QR CODE DI BAWAH INI      ║");
@@ -535,6 +554,7 @@ async function startBot() {
       console.log("\n⚠️  QR Code berlaku ~20 detik, scan cepat!\n");
     }
 
+    // ── Berhasil connect ──
     if (connection === "open") {
       botStatus.connected = true;
       activeSock = sock;
@@ -550,8 +570,10 @@ async function startBot() {
       }
       console.log("╚══════════════════════════════════════╝");
       console.log(`🤖 Bot user.id : ${sock.user?.id || "-"}`);
-      console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}\n`);
+      console.log(`🔑 Bot user.lid: ${sock.user?.lid || "-"}`);
+      console.log(`📁 Session dir : ${AUTH_DIR}\n`);
 
+      // Register bot ke LID map
       if (sock.user?.id && sock.user?.lid) {
         const botPhone = jidToDigits(sock.user.id);
         if (botPhone.length >= 8) {
@@ -561,7 +583,7 @@ async function startBot() {
 
       // Backup segera setelah login baru
       if (isNewLogin) {
-        console.log("💾 Login baru — backup session ke GitHub...");
+        console.log("💾 Login baru — backup session ke MongoDB...");
         scheduleBackup(3000);
       }
 
@@ -591,6 +613,7 @@ async function startBot() {
       }, 5000);
     }
 
+    // ── Koneksi terputus ──
     if (connection === "close") {
       botStatus.connected = false;
       activeSock = null;
@@ -615,11 +638,13 @@ async function startBot() {
         console.log("   Menghapus session lama...");
 
         try {
-          const files = fs.readdirSync(AUTH_DIR);
-          for (const file of files) {
-            fs.unlinkSync(path.join(AUTH_DIR, file));
+          if (fs.existsSync(AUTH_DIR)) {
+            const files = fs.readdirSync(AUTH_DIR);
+            for (const file of files) {
+              fs.unlinkSync(path.join(AUTH_DIR, file));
+            }
+            console.log("✅ Session lama dihapus.");
           }
-          console.log("✅ Session lama dihapus.");
         } catch (e) {
           console.error(`❌ Gagal hapus session: ${e.message}`);
         }
@@ -633,7 +658,7 @@ async function startBot() {
   });
 
   // ==========================================
-  // CREDS UPDATE — Simpan + backup ke GitHub
+  // CREDS UPDATE — Simpan + backup MongoDB
   // ==========================================
   sock.ev.on("creds.update", async () => {
     await saveCreds();
@@ -723,7 +748,7 @@ async function gracefulShutdown(signal) {
 
   try {
     await backupSession();
-    console.log("💾 Session di-backup sebelum shutdown.");
+    console.log("💾 Session di-backup ke MongoDB sebelum shutdown.");
   } catch (e) {
     console.warn(`⚠️ Gagal backup session: ${e.message}`);
   }
@@ -752,10 +777,11 @@ async function main() {
   console.log("║   API: app.pakasir.com               ║");
   console.log("╚══════════════════════════════════════╝\n");
 
-  // Step 1: Init & restore session
+  // ── Step 1: Init session manager ──
+  // Restore session dari MongoDB jika ada
   await initSessionManager();
 
-  // Step 2: Start bot
+  // ── Step 2: Start bot ──
   await startBot();
 }
 

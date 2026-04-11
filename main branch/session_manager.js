@@ -5,7 +5,31 @@
 const fs = require("fs");
 const path = require("path");
 
-const AUTH_DIR = path.resolve(__dirname, "../session");
+// ==========================================
+// FIX PATH — Gunakan /workspace/session
+// ==========================================
+// Di Koyeb:
+// __dirname  = /workspace/main branch/
+// ROOT       = /workspace/
+// session/   = /workspace/session/  ← BENAR
+//
+// JANGAN pakai ../session karena akan jadi /session (permission denied)
+
+const WORKSPACE_DIR =
+  process.env.WORKSPACE_DIR ||
+  path.resolve(__dirname, "..") || // /workspace
+  "/workspace";
+
+// Pastikan tidak ke root filesystem
+const AUTH_DIR = (() => {
+  const candidate = path.resolve(__dirname, "..", "session");
+  // Jika candidate = /session (root), fallback ke dalam workspace
+  if (candidate === "/session" || candidate.startsWith("/session/")) {
+    return path.resolve(__dirname, "session"); // /workspace/main branch/session
+  }
+  return candidate; // /workspace/session
+})();
+
 const MONGO_URI = process.env.MONGODB_URI;
 const SESSION_ID = process.env.SESSION_ID || "whatsapp_bot_session";
 
@@ -20,12 +44,24 @@ function log(msg) {
 }
 
 // ==========================================
-// ENSURE DIR
+// ENSURE DIR — Dengan permission check
 // ==========================================
 function ensureSessionDir() {
-  if (!fs.existsSync(AUTH_DIR)) {
-    fs.mkdirSync(AUTH_DIR, { recursive: true });
-    log(`📁 Folder session dibuat: ${AUTH_DIR}`);
+  try {
+    if (!fs.existsSync(AUTH_DIR)) {
+      fs.mkdirSync(AUTH_DIR, { recursive: true });
+      log(`📁 Folder session dibuat: ${AUTH_DIR}`);
+    }
+  } catch (e) {
+    log(`❌ Tidak bisa buat folder ${AUTH_DIR}: ${e.message}`);
+    // Fallback ke folder sementara yang pasti bisa ditulis
+    const fallback = path.resolve(__dirname, "session_data");
+    log(`⚠️ Fallback ke: ${fallback}`);
+    if (!fs.existsSync(fallback)) {
+      fs.mkdirSync(fallback, { recursive: true });
+    }
+    // Override AUTH_DIR
+    Object.defineProperty(module.exports, "AUTH_DIR", { value: fallback });
   }
 }
 
@@ -36,45 +72,50 @@ async function connectMongo() {
   if (isConnected && db) return true;
 
   if (!MONGO_URI) {
-    log("⚠️ MONGODB_URI tidak diset.");
+    log("⚠️ MONGODB_URI tidak diset di environment.");
     return false;
   }
 
   try {
     const { MongoClient } = require("mongodb");
     mongoClient = new MongoClient(MONGO_URI, {
-      connectTimeoutMS: 10000,
-      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 15000,
+      serverSelectionTimeoutMS: 15000,
     });
 
     await mongoClient.connect();
     db = mongoClient.db("whatsapp_session");
     collection = db.collection("sessions");
 
-    // Buat index
     await collection.createIndex({ sessionId: 1 }, { unique: true });
 
     isConnected = true;
     log("✅ MongoDB Atlas terhubung!");
     return true;
   } catch (e) {
-    log(`❌ MongoDB connection error: ${e.message}`);
+    log(`❌ MongoDB error: ${e.message}`);
     isConnected = false;
     return false;
   }
 }
 
 // ==========================================
-// CEK SESSION VALID (lokal)
+// CEK SESSION VALID
 // ==========================================
 function isSessionValid() {
   const credsPath = path.join(AUTH_DIR, "creds.json");
-  if (!fs.existsSync(credsPath)) return false;
+  if (!fs.existsSync(credsPath)) {
+    log(`ℹ️ creds.json tidak ada: ${credsPath}`);
+    return false;
+  }
 
   try {
     const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
-    return !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
-  } catch {
+    const valid = !!(creds.me || creds.noiseKey || creds.signedIdentityKey);
+    log(valid ? `✅ Session valid` : `⚠️ Session tidak valid`);
+    return valid;
+  } catch (e) {
+    log(`❌ Baca creds.json error: ${e.message}`);
     return false;
   }
 }
@@ -84,7 +125,10 @@ function isSessionValid() {
 // ==========================================
 async function backupSession() {
   const ok = await connectMongo();
-  if (!ok) return;
+  if (!ok) {
+    log("⚠️ Skip backup — MongoDB tidak terhubung.");
+    return;
+  }
 
   ensureSessionDir();
 
@@ -95,21 +139,19 @@ async function backupSession() {
   }
 
   try {
-    // Baca semua file session
     const sessionData = {};
+
     for (const file of files) {
       const filePath = path.join(AUTH_DIR, file);
       try {
         const content = fs.readFileSync(filePath, "utf-8");
         sessionData[file] = JSON.parse(content);
       } catch {
-        // Simpan sebagai base64 jika bukan JSON
         const buffer = fs.readFileSync(filePath);
         sessionData[file] = { _base64: buffer.toString("base64") };
       }
     }
 
-    // Simpan ke MongoDB
     await collection.updateOne(
       { sessionId: SESSION_ID },
       {
@@ -123,7 +165,7 @@ async function backupSession() {
       { upsert: true },
     );
 
-    log(`✅ Session di-backup ke MongoDB! (${files.length} files)`);
+    log(`✅ Backup berhasil! (${files.length} files → MongoDB)`);
   } catch (e) {
     log(`❌ Backup error: ${e.message}`);
   }
@@ -133,17 +175,16 @@ async function backupSession() {
 // RESTORE SESSION DARI MONGODB
 // ==========================================
 async function restoreSession() {
-  log("\n🔄 Mencoba restore session dari MongoDB...");
+  log("🔄 Mencoba restore session dari MongoDB...");
 
   const ok = await connectMongo();
   if (!ok) {
-    log("❌ MongoDB tidak terhubung.");
+    log("❌ MongoDB tidak terhubung, skip restore.");
     return false;
   }
 
-  // Jika session lokal sudah valid, skip
   if (isSessionValid()) {
-    log("✅ Session lokal valid, skip restore.");
+    log("✅ Session lokal sudah valid, skip restore.");
     return true;
   }
 
@@ -152,24 +193,22 @@ async function restoreSession() {
 
     if (!doc || !doc.files) {
       log("ℹ️ Tidak ada session di MongoDB.");
-      log("   Bot akan tampilkan QR Code.");
+      log("   Bot akan tampilkan QR Code untuk scan pertama.");
       return false;
     }
 
     ensureSessionDir();
 
-    // Restore semua file
     const files = doc.files;
     let restored = 0;
+    const total = Object.keys(files).length;
 
     for (const [filename, content] of Object.entries(files)) {
       const filePath = path.join(AUTH_DIR, filename);
       try {
-        if (content._base64) {
-          // File binary (base64)
+        if (content && content._base64) {
           fs.writeFileSync(filePath, Buffer.from(content._base64, "base64"));
         } else {
-          // File JSON
           fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
         }
         restored++;
@@ -178,12 +217,10 @@ async function restoreSession() {
       }
     }
 
-    log(
-      `✅ Session di-restore dari MongoDB! (${restored}/${Object.keys(files).length} files)`,
-    );
-    log(
-      `   Last backup: ${doc.updatedAt?.toLocaleString("id-ID") || "unknown"}`,
-    );
+    log(`✅ Restore selesai! (${restored}/${total} files)`);
+    if (doc.updatedAt) {
+      log(`   Last backup: ${new Date(doc.updatedAt).toLocaleString("id-ID")}`);
+    }
 
     return isSessionValid();
   } catch (e) {
@@ -203,7 +240,7 @@ function scheduleBackup(delayMs = 5000) {
 }
 
 // ==========================================
-// DELETE SESSION DARI MONGODB
+// DELETE SESSION
 // ==========================================
 async function deleteSession() {
   const ok = await connectMongo();
@@ -218,28 +255,26 @@ async function deleteSession() {
 }
 
 // ==========================================
-// INIT SESSION MANAGER
+// INIT
 // ==========================================
 async function initSessionManager() {
   console.log("\n╔══════════════════════════════════════╗");
   console.log("║   🔐 SESSION MANAGER (MongoDB)       ║");
   console.log("╚══════════════════════════════════════╝");
 
+  log(`__dirname : ${__dirname}`);
   log(`AUTH_DIR  : ${AUTH_DIR}`);
   log(`SESSION_ID: ${SESSION_ID}`);
   log(`MongoDB   : ${MONGO_URI ? "✅ URI diset" : "❌ tidak diset"}`);
 
   ensureSessionDir();
 
-  // Cek session lokal dulu
   if (isSessionValid()) {
     log("✅ Session lokal valid.");
-    // Tetap backup ke MongoDB untuk sinkronisasi
     scheduleBackup(10000);
     return true;
   }
 
-  // Restore dari MongoDB
   const restored = await restoreSession();
   return restored;
 }
