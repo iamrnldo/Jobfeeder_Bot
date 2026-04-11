@@ -2,3 +2,5 @@ node_modules/
 *.log
 store.json
 store_backup.json
+.env.example
+.env
